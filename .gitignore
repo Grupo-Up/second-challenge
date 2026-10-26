@@ -1,0 +1,6 @@
+/__pycache__
+.env
+.venv
+.crewai
+/whatsapp-bot/auth
+/whatsapp-bot/node_modules
