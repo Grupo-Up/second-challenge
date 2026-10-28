@@ -164,14 +164,17 @@ A rede neural ainda **não tem função definitivamente escolhida**. Uma possibi
 - Valor principal: captar informações de compromissos e organizá-las na agenda de um responsável.
 - A organização dos cuidados deve ser colaborativa, sem substituir a autonomia das pessoas.
 - O protótipo pode usar dados fictícios e cenários simulados.
+- **Framework de agentes: CrewAI**, no formato JSONC (`crew_extrair.jsonc`, `crew_responder.jsonc` e `agents/`). O motivo técnico está registrado em `ARQUITETURA.md` §11: no formato YAML, um guardrail em função Python é convertido silenciosamente em guardrail de LLM, o que trocaria as validações determinísticas do projeto por julgamento probabilístico.
+- **Um agente nesta etapa**, com duas tarefas sequenciais. O segundo agente — o coordenador que confere autorização e cria eventos na agenda, previsto na seção 5 — entra junto com a integração de calendário. Até lá, o requisito de "dois agentes colaborando" da seção 9 permanece **em aberto**.
+- **Memória por grupo.** O sistema guarda o compromisso pendente de cada grupo e o funde com o que a mensagem seguinte trouxer, atendendo ao passo 3 da seção 3 ("eu levo ela"). A fusão é código determinístico, não prompt: campo vazio na mensagem nova não apaga dado já confirmado. Nesta etapa o armazenamento é um dicionário em memória; **banco de dados continua em aberto**, com SQLite como próximo passo.
+- **O sistema não preenche o responsável sozinho.** Quando alguém se oferece sem se identificar ("eu levo ela"), a resposta reconhece a oferta e pede o nome. Atribuir a tarefa a partir de um apelido do WhatsApp violaria a seção 6.
 
 ### Ainda não definido - não presumir como decisão
 
 - Canal de mensagens (WhatsApp, outro mensageiro ou interface própria).
 - Método autorizado de acesso às mensagens e suas eventuais limitações.
 - Provedor de calendário (Google Calendar, Outlook ou outro).
-- Framework de agentes (CrewAI, LangChain, LangGraph ou outro).
-- Modelo de linguagem, API, custos e infraestrutura de execução.
+- Modelo de linguagem, API, custos e infraestrutura de execução. (O protótipo usa `gpt-oss-20b` via Groq, mas isso não foi fechado como decisão de produto.)
 - Papel final da rede neural, dataset e métricas de treinamento.
 - Banco de dados e tecnologias definitivas do frontend/backend.
 - Forma exata de confirmação dos agendamentos, notificações e controle de acesso.

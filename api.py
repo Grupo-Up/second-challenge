@@ -31,6 +31,9 @@ class Entrada(BaseModel):
     mensagem: str
     # Data da mensagem, base para interpretar "amanha" e "quinta-feira"
     data_mensagem: Optional[str] = None
+    # Identificador do grupo. Sem ele o pedido e tratado sem memoria:
+    # cada mensagem vira independente, como antes.
+    grupo_id: Optional[str] = None
 
 
 @app.get("/saude")
@@ -42,7 +45,9 @@ def saude():
 def rodar(entrada: Entrada):
     print("\n--- pedido recebido, executando os agentes ---", flush=True)
 
-    resultado = processar(entrada.mensagem, entrada.data_mensagem)
+    resultado = processar(
+        entrada.mensagem, entrada.data_mensagem, entrada.grupo_id
+    )
 
     compromisso = resultado["compromisso"]
     pendentes = faltantes(compromisso) if compromisso else []
@@ -53,6 +58,8 @@ def rodar(entrada: Entrada):
         "sim" if compromisso and compromisso.get("e_compromisso") else "nao",
         "| campos ausentes:",
         ", ".join(pendentes) if pendentes else "nenhum",
+        "| memoria:",
+        "completou pendente" if resultado["usou_pendente"] else "sem pendente",
         flush=True,
     )
 

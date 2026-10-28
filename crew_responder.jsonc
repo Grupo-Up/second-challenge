@@ -1,0 +1,34 @@
+// Tarefa 2 de 2: escrever a resposta ao grupo.
+//
+// Recebe o compromisso JA FUNDIDO -- pendente mais o que a mensagem nova
+// trouxe -- por {compromisso}, montado em agentes.py. Nao ve a mensagem
+// original, entao nao pode reintroduzir um detalhe que a extracao
+// descartou por nao estar escrito.
+//
+// "context": [] explicito. Sem a chave, o CrewAI agregaria a saida de
+// todas as tarefas anteriores da crew.
+//
+// GUARDRAIL: tem que ser {"python": ...}. Uma string simples vira
+// LLMGuardrail -- outra LLM julgando a saida -- em silencio, sem erro.
+{
+  "name": "Responder ao Grupo",
+
+  "agents": ["assistente_de_compromissos"],
+
+  "tasks": [
+    {
+      "name": "responder",
+      "agent": "assistente_de_compromissos",
+      "context": [],
+
+      "description": "Compromisso entendido ate agora pelo grupo:\n{compromisso}\n\nEscreva a resposta ao grupo em ate 4 frases. Regras obrigatorias:\n(1) Escreva na terceira pessoa, como um assistente que organiza a informacao. Nunca use eu, mim, comigo, meu ou minha.\n(2) Resuma apenas os dados que estao no compromisso acima. Nao acrescente local, data, horario, nome ou especialidade que nao estejam ali.\n(3) Se algum dado obrigatorio estiver nulo (tipo, pessoa idosa, data ou horario), faca uma pergunta direta pedindo esse dado. Nao pergunte por dado que ja esta preenchido.\n(4) As regras (4a), (4b) e (4c) tratam de quem acompanha. Aplique EXATAMENTE UMA delas, a que corresponder ao estado do compromisso. Nunca atribua a tarefa a alguem por conta propria.\n(4a) responsavel nulo e alguem_se_ofereceu false: pergunte ao grupo quem podera acompanhar.\n(4b) responsavel nulo e alguem_se_ofereceu true: reconheca que alguem se ofereceu e peca APENAS que a pessoa confirme escrevendo o proprio nome. Nao pergunte tambem quem pode acompanhar -- seria a mesma pergunta duas vezes. Nao adivinhe de quem se trata.\n(4c) responsavel preenchido: diga quem vai acompanhar e nao faca nenhuma pergunta sobre acompanhamento. Nao mencione ofertas: quem se ofereceu ja foi identificado.\n(5) Nao diga que o compromisso foi agendado, marcado ou registrado. Nada foi gravado em agenda nesta etapa.\n(6) Se e_compromisso for false, responda apenas que nenhum compromisso foi identificado na mensagem.",
+
+      "expected_output": "Uma mensagem curta em portugues, na terceira pessoa, com o resumo do que foi entendido e as perguntas do que falta.",
+
+      "guardrail": { "python": "compromisso.validar_resposta" },
+      "guardrail_max_retries": 2
+    }
+  ],
+
+  "process": "sequential"
+}

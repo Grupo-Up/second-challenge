@@ -1,0 +1,34 @@
+// Tarefa 1 de 2: extrair o compromisso da mensagem.
+//
+// Roda sozinha porque a fusao com o compromisso pendente acontece em
+// Python, entre esta tarefa e a de responder. Ver agentes.py.
+//
+// REFERENCIAS PYTHON: {"python": "modulo.atributo"} importa e executa
+// codigo deste repositorio no carregamento. So aponte para modulos daqui.
+//
+// GUARDRAIL: tem que ser {"python": ...}. Uma string simples vira
+// LLMGuardrail -- outra LLM julgando a saida -- em silencio, sem erro.
+//
+// ORDEM DOS PLACEHOLDERS: {pendente} vem DEPOIS de {mensagem} de proposito.
+// O CrewAI substitui em ordem de aparicao, sobre o texto ja acumulado.
+{
+  "name": "Extrair Compromisso",
+
+  "agents": ["assistente_de_compromissos"],
+
+  "tasks": [
+    {
+      "name": "extrair",
+      "agent": "assistente_de_compromissos",
+
+      "description": "Hoje e {data_mensagem}. Uma pessoa escreveu no grupo familiar: '{mensagem}'\n\nCompromisso que o grupo deixou em aberto antes:\n{pendente}\n\nExtraia os dados do compromisso. Regras obrigatorias:\n(1) Use somente o que esta escrito na mensagem. Nao complete nenhum campo por deducao, probabilidade ou experiencia comum.\n(2) Datas relativas como 'amanha', 'quinta-feira' ou 'semana que vem' devem ser convertidas tomando {data_mensagem} como referencia, no formato AAAA-MM-DD. Se a mensagem nao permitir determinar a data com certeza, deixe o campo nulo.\n(3) Horario no formato HH:MM, 24 horas.\n(4) Preencha 'responsavel' apenas se alguem aceitou explicitamente a tarefa nesta mensagem E foi identificado pelo nome. Mencionar uma pessoa nao e o mesmo que ela ter aceitado.\n(4a) Se alguem se ofereceu sem dizer o nome -- 'eu levo ela', 'deixa comigo', 'eu acompanho' --, deixe 'responsavel' nulo e marque alguem_se_ofereceu como true. O sistema nao atribui a tarefa a ninguem por conta propria.\n(5) Se a mensagem for conversa cotidiana e nao descrever um compromisso, marque e_compromisso como false e deixe os demais campos nulos.\n(6) O compromisso pendente acima serve APENAS para voce entender a quem a mensagem se refere -- 'ela', 'la', 'nesse dia', 'o medico'. Nao copie nenhum campo dele para a sua resposta. O JSON que voce devolve contem somente o que a mensagem ATUAL informa; o restante continua nulo. Juntar as duas coisas e tarefa de outra etapa.\n(7) Marque refere_se_ao_pendente como true quando a mensagem atual completa, confirma ou corrige esse compromisso pendente. Marque false quando ela descreve um compromisso diferente, ou quando nao ha pendente algum.\n(8) Havendo pendente e a mensagem atual acrescentando ou corrigindo algum dado dele -- inclusive apenas quem acompanha, como em 'eu levo ela' --, e_compromisso e true, mesmo que a mensagem sozinha parecesse conversa cotidiana. A regra (5) vale apenas quando a mensagem nao tem relacao com o pendente.",
+
+      "expected_output": "Apenas um objeto JSON, sem texto antes ou depois e sem cerca de markdown, com exatamente estas chaves: tipo, pessoa_idosa, especialidade, data, horario, local, responsavel, e_compromisso, refere_se_ao_pendente, alguem_se_ofereceu. Use null nos dados que a mensagem nao informa.",
+
+      "guardrail": { "python": "compromisso.validar_extracao" },
+      "guardrail_max_retries": 2
+    }
+  ],
+
+  "process": "sequential"
+}

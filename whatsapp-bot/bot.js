@@ -35,11 +35,17 @@ function extrairTexto(message) {
 
 // Envia a mensagem para a API e devolve a resposta dos agentes.
 // A data serve de referencia para "amanha", "quinta-feira" e afins.
-async function consultarAgente(mensagem, dataMensagem) {
+// O grupo e a chave da memoria: e por ele que "eu levo ela" encontra a
+// consulta combinada na mensagem anterior.
+async function consultarAgente(mensagem, dataMensagem, grupoId) {
   const resposta = await fetch(API_AGENTE, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ mensagem, data_mensagem: dataMensagem }),
+    body: JSON.stringify({
+      mensagem,
+      data_mensagem: dataMensagem,
+      grupo_id: grupoId,
+    }),
   });
 
   if (!resposta.ok) {
@@ -158,7 +164,7 @@ async function iniciarBot() {
         )
           .toLocaleDateString('sv-SE', { timeZone: 'America/Sao_Paulo' });
 
-        const resposta = await consultarAgente(pedido, dataMensagem);
+        const resposta = await consultarAgente(pedido, dataMensagem, grupo);
 
         await bot.sendMessage(grupo, { text: resposta });
       } catch (erro) {
