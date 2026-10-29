@@ -4,7 +4,7 @@ Dois agentes de IA que leem as combinações feitas num grupo familiar de WhatsA
 
 O objetivo é reduzir esquecimentos e evitar que informações importantes se percam no meio das mensagens, sem substituir a confirmação humana nem a autonomia da pessoa idosa.
 
-Projeto acadêmico. Visão completa do produto em [`CLAUDE.md`](CLAUDE.md); funcionamento interno em [`ARQUITETURA.md`](ARQUITETURA.md).
+Projeto acadêmico. Visão completa do produto em [`CLAUDE.md`](CLAUDE.md); funcionamento interno em [`ARQUITETURA.md`](docs/ARQUITETURA.md).
 
 ---
 
@@ -19,9 +19,9 @@ Alguém escreve no grupo:
 O bot repassa a mensagem para a API, que roda os dois agentes em sequência:
 
 ```text
-bot.js  ──►  api.py  ──►  AGENTE 1  ──►  AGENTE 2  ──►  resposta no grupo
-            (HTTP)       extrai o        escreve a
-                         compromisso     resposta
+bot.js  ──►  app/main.py  ──►  AGENTE 1  ──►  AGENTE 2  ──►  resposta no grupo
+            (HTTP)            extrai o        escreve a
+                              compromisso     resposta
 ```
 
 **Agente 1 — Intérprete.** Lê a mensagem e devolve um JSON estruturado. Não preenche nada por dedução: o que a mensagem não disser fica nulo.
@@ -35,19 +35,21 @@ bot.js  ──►  api.py  ──►  AGENTE 1  ──►  AGENTE 2  ──►  
   "horario": "15:00",
   "local": "clinica do centro",
   "responsavel": null,
-  "e_compromisso": true
+  "classificacao": "cuidado"
 }
 ```
 
 **Agente 2 — Coordenador.** Recebe só o JSON — nunca a mensagem original — e escreve a resposta ao grupo, resumindo o que foi entendido e perguntando o que falta.
 
 ```text
-Foi identificada uma consulta de cardiologia para Dona Helena
-em 29/10 as 15:00, na clinica do centro.
+O compromisso e uma consulta de cardiologia para Dona Helena,
+dia 29 de outubro de 2026, as 15:00, na clinica do centro.
 Quem podera acompanha-la nesse dia?
 ```
 
-Entre os dois agentes e depois deles rodam **guardrails** — código Python determinístico, não IA — que rejeitam JSON malformado, data no passado e qualquer resposta que afirme ter agendado algo. Detalhes em [`ARQUITETURA.md`](ARQUITETURA.md) §2 e §3.
+O campo `classificacao` decide a resposta. Em `cuidado`, o resumo acima. Em `fora_do_escopo` — uma reunião de trabalho, um aniversário — o assistente responde que aquilo fica fora do que ele acompanha. Em `conversa`, que nenhum compromisso foi identificado.
+
+Entre os dois agentes e depois deles rodam **guardrails** — código Python determinístico, não IA — que rejeitam JSON malformado, data no passado e qualquer resposta que afirme ter agendado algo. Detalhes em [`ARQUITETURA.md`](docs/ARQUITETURA.md) §2 e §3.
 
 > **Nada é gravado em agenda ainda.** Não há integração com Google Calendar ou equivalente. Nesta etapa o sistema apenas interpreta e organiza a conversa.
 
@@ -83,7 +85,7 @@ Dois processos, em dois terminais. Comandos em Bash — no PowerShell troque `/`
 **Terminal 1 — API dos agentes:**
 
 ```bash
-./.venv/Scripts/python.exe -m uvicorn api:app --reload --port 8000
+./.venv/Scripts/python.exe -m uvicorn app.main:app --reload --port 8000
 ```
 
 Confirme com `curl http://localhost:8000/saude` → `{"status":"ok"}`
@@ -101,42 +103,56 @@ Depois, num grupo: `!ping` testa a conexão, `!agenda <mensagem>` aciona os agen
 
 **Testando com o próprio número?** O bot ignora as próprias mensagens por padrão. Suba com `RESPONDER_PROPRIAS=1 node bot.js`.
 
-**Sem WhatsApp:** `./.venv/Scripts/python.exe two_agents.py` roda três cenários no terminal.
+**Sem WhatsApp:** com a API no ar, chame direto:
 
-Passo a passo completo e solução de problemas: [`ARQUITETURA.md`](ARQUITETURA.md) §6 e §7.
+```bash
+curl -X POST http://localhost:8000/agente \
+  -H "Content-Type: application/json" \
+  -d '{"mensagem": "a vo Helena tem consulta no cardiologista quinta as 15h"}'
+```
+
+Passo a passo completo e solução de problemas: [`ARQUITETURA.md`](docs/ARQUITETURA.md) §6 e §7.
 
 ---
 
 ## Os arquivos
 
-### Código que roda em produção
+```text
+challenge-2/
+├── app/
+│   ├── main.py              # sobe o FastAPI e registra as rotas
+│   ├── compromisso.py       # modelo de dados e guardrails — sem IA
+│   ├── routes/agente.py     # POST /agente e GET /saude
+│   ├── agents/
+│   │   ├── interprete.py    # agente 1
+│   │   └── coordenador.py   # agente 2
+│   └── crews/crew.py        # a LLM, as duas tarefas e a Crew
+├── docs/ARQUITETURA.md
+├── whatsapp-bot/bot.js
+├── CLAUDE.md
+└── README.md
+```
+
+### Código
 
 | Arquivo | O que faz |
 | --- | --- |
-| `agentes.py` | **O coração.** Define os dois agentes, as duas tarefas e a Crew que os liga. `processar()` é a função que todo o resto chama. |
-| `compromisso.py` | Modelo Pydantic do compromisso e os guardrails. Código determinístico, sem LLM — é o que impede o sistema de inventar dado ou mentir sobre agendamento. |
-| `api.py` | Servidor FastAPI. Expõe `POST /agente`, que recebe a mensagem e devolve resposta, compromisso e campos faltantes. |
+| `app/crews/crew.py` | **O coração.** Define a LLM, as duas tarefas e a Crew que liga os agentes. `processar()` é a função que todo o resto chama. |
+| `app/agents/interprete.py` | Agente 1: papel, objetivo e história de quem lê a mensagem e extrai o compromisso. |
+| `app/agents/coordenador.py` | Agente 2: papel, objetivo e história de quem responde ao grupo. |
+| `app/compromisso.py` | Modelo Pydantic do compromisso e os guardrails. Código determinístico, sem LLM — é o que impede o sistema de inventar dado ou mentir sobre agendamento. |
+| `app/routes/agente.py` | `POST /agente`, que recebe a mensagem e devolve resposta, compromisso e campos faltantes. |
+| `app/main.py` | Sobe o FastAPI e inclui o router. É o alvo do `uvicorn`. |
 | `whatsapp-bot/bot.js` | Bot em Node com Baileys. Escuta os grupos, reconhece o comando `!agenda`, chama a API e publica a resposta. |
 
-### Scripts de demonstração
-
-Rodam os agentes direto no terminal, **sem WhatsApp e sem API**. Nenhum dos dois participa do fluxo de produção — `api.py` não os importa, e apagá-los não afeta o bot.
-
-| Arquivo | O que faz |
-| --- | --- |
-| `first_agent.py` | Roda **só o Agente 1**, sobre uma mensagem fixa, com `verbose=True`. Mostra o raciocínio do agente e os retries do guardrail. Use quando o defeito está na extração e você não quer esperar o Agente 2. |
-| `two_agents.py` | Roda **os dois agentes**, sobre três mensagens fixas: uma completa, uma com dado faltando e uma conversa cotidiana. Imprime o JSON do Agente 1 e a resposta do Agente 2 lado a lado. |
-
-A mensagem de entrada é fixa no código dos dois — para testar outra frase, edite a constante no topo do arquivo.
-
-Servem para três coisas: **isolar defeito** (se `two_agents.py` funciona, o problema está no bot ou na API, não nos agentes), **iterar rápido** em prompts sem subir nada, e **demonstrar** os cenários sem depender de QR code e conexão.
+Agentes e tarefas ficam em arquivos separados de propósito: **quem é o agente** muda pouco, **o que se pede a ele** muda a cada ajuste de regra.
 
 ### Documentação
 
 | Arquivo | O que é |
 | --- | --- |
-| `CLAUDE.md` | Visão do produto: problema, escopo, requisitos acadêmicos, privacidade, decisões tomadas e pendentes. Fonte de verdade do projeto. |
-| `ARQUITETURA.md` | Como o sistema funciona por dentro: os agentes em detalhe, os guardrails, o que ainda não existe, documentação do CrewAI. |
+| `CLAUDE.md` | Visão do produto: problema, escopo, requisitos acadêmicos, privacidade, decisões tomadas e pendentes. Fonte de verdade do projeto. Fica na raiz porque é lido automaticamente pelo Claude Code. |
+| `docs/ARQUITETURA.md` | Como o sistema funciona por dentro: os agentes em detalhe, os guardrails, o que ainda não existe, documentação do CrewAI. |
 | `README.md` | Este arquivo. |
 
 ### Não versionado
@@ -178,4 +194,4 @@ Protótipo funcional. Demonstrável com perfis fictícios.
 
 **Funciona hoje:** interpretação da mensagem, extração estruturada com validação, detecção de dado faltante, resposta ao grupo pedindo o que falta.
 
-**Ainda não existe:** gravação em agenda, memória entre mensagens, detecção de duplicidade, rede neural própria, autorização de acesso, base de conhecimento e MLOps. Lista completa com referências ao `CLAUDE.md` em [`ARQUITETURA.md`](ARQUITETURA.md) §8.
+**Ainda não existe:** gravação em agenda, memória entre mensagens, detecção de duplicidade, rede neural própria, autorização de acesso, base de conhecimento e MLOps. Lista completa com referências ao `CLAUDE.md` em [`ARQUITETURA.md`](docs/ARQUITETURA.md) §8.
