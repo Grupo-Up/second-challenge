@@ -9,7 +9,7 @@ adivinhacao (CLAUDE.md, secoes 3 e 11.6).
 import json
 import re
 from datetime import date, datetime
-from typing import Optional
+from typing import Literal, Optional
 from zoneinfo import ZoneInfo
 
 import json_repair
@@ -50,8 +50,13 @@ class Compromisso(BaseModel):
     responsavel: Optional[str] = Field(
         None, description="so quem aceitou explicitamente a tarefa"
     )
-    e_compromisso: bool = Field(
-        True, description="False quando a mensagem e conversa cotidiana"
+    classificacao: Literal["cuidado", "fora_do_escopo", "conversa"] = Field(
+        "conversa",
+        description=(
+            "cuidado: compromisso de cuidado da pessoa idosa, o unico caso "
+            "que o projeto acompanha. fora_do_escopo: e um compromisso, mas "
+            "nao de cuidado. conversa: nao ha compromisso nenhum."
+        ),
     )
 
 
@@ -145,7 +150,10 @@ def validar_extracao(saida):
             "de deduzir um valor.",
         )
 
-    # Devolve o JSON normalizado: e o que o agente 2 recebe pelo context
+    # Devolve o JSON normalizado: e o que o agente 2 recebe pelo context.
+    # A data fica em AAAA-MM-DD, que e o formato verificavel pelo regex e o
+    # que a API de calendario vai usar. Escrever a data por extenso para o
+    # grupo e regra da tarefa do agente 2.
     return (
         True,
         json.dumps(compromisso.model_dump(), ensure_ascii=False, indent=2),
