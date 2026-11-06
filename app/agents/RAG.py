@@ -33,4 +33,15 @@ llm = ChatGroq(model="openai/gpt-oss-20b")
 # resposta = llm.invoke("Quais os benefícios de ir a Marte?")
 # print(resposta.content)
 
-# url = 
+from pathlib import Path
+
+from langchain_community.document_loaders import PyPDFLoader
+
+# Caminho relativo à raiz do repositório, independente do diretório de execução.
+PDF_PATH = Path(__file__).resolve().parents[2] / "teste" / "Guia_do_cuidador_-_Versao_Digital.pdf"
+
+loader = PyPDFLoader(str(PDF_PATH))
+
+pages = []
+for page in loader.lazy_load():
+    pages.append(page)
