@@ -31,7 +31,7 @@ load_dotenv()
 
 # Caminho relativo à raiz do repositório, independente do diretório de execução.
 PDF_PATH = (
-    Path(__file__).resolve().parents[2] / "teste" / "Guia_do_cuidador_-_Versao_Digital.pdf"
+    Path(__file__).resolve().parents[2] / "arquivos" / "Guia_do_cuidador_-_Versao_Digital.pdf"
 )
 
 # Modelo multilíngue treinado para busca (retrieval), bom em português.
