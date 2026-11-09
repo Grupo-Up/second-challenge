@@ -1,0 +1,7 @@
+crewai
+fastapi
+uvicorn
+python-dotenv
+json-repair
+pydantic
+psycopg[binary]

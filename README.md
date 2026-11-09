@@ -49,9 +49,7 @@ Quem podera acompanha-la nesse dia?
 
 O campo `classificacao` decide a resposta. Em `cuidado`, o resumo acima. Em `fora_do_escopo` — uma reunião de trabalho, um aniversário — o assistente responde que aquilo fica fora do que ele acompanha. Em `conversa`, que nenhum compromisso foi identificado.
 
-Entre os dois agentes e depois deles rodam **guardrails** — código Python determinístico, não IA — que rejeitam JSON malformado, data no passado e qualquer resposta que afirme ter agendado algo. Detalhes em [`ARQUITETURA.md`](docs/ARQUITETURA.md) §2 e §3.
-
-> **Nada é gravado em agenda ainda.** Não há integração com Google Calendar ou equivalente. Nesta etapa o sistema apenas interpreta e organiza a conversa.
+Entre os dois agentes e depois deles rodam **guardrails** — código Python determinístico, não IA — que rejeitam JSON malformado e data no passado. O Agente 2 possui uma tool de agenda, que executa operações parametrizadas no PostgreSQL quando a ação estiver confirmada.
 
 ---
 
@@ -62,7 +60,7 @@ Entre os dois agentes e depois deles rodam **guardrails** — código Python det
 ```bash
 # 1. Ambiente Python
 python -m venv .venv
-./.venv/Scripts/python.exe -m pip install crewai fastapi uvicorn python-dotenv json-repair pydantic
+./.venv/Scripts/python.exe -m pip install -r requirements.txt
 
 # 2. Dependências do bot
 cd whatsapp-bot && npm install && cd ..
@@ -75,6 +73,59 @@ GROQ_API_KEY=sua_chave_aqui
 ```
 
 > O `.env` **não vai para o repositório**. Cada pessoa cria o seu.
+
+---
+
+## PostgreSQL com Docker
+
+O banco usado pela tool de agenda roda em um container PostgreSQL definido em
+`compose.yml`. Não é necessário instalar o PostgreSQL diretamente no sistema.
+
+Com o Docker instalado e iniciado, execute na raiz do projeto:
+
+```bash
+docker compose up -d
+```
+
+Verifique se o container está ativo:
+
+```bash
+docker compose ps
+```
+
+O serviço fica disponível em `localhost:5432` com:
+
+```text
+Banco: agenda
+Usuário: agenda_app
+Senha: agenda_dev_password
+```
+
+Para consultar os compromissos diretamente:
+
+```bash
+docker compose exec postgres psql \
+  -U agenda_app \
+  -d agenda \
+  -c "SELECT * FROM compromissos;"
+```
+
+Para acompanhar os logs:
+
+```bash
+docker compose logs -f postgres
+```
+
+Pressione `Ctrl+C` para sair dos logs sem parar o container. Para parar o
+container:
+
+```bash
+docker compose down
+```
+
+> No Linux, se aparecer `permission denied` ao acessar
+> `/var/run/docker.sock`, adicione seu usuário ao grupo `docker` com
+> `sudo usermod -aG docker $USER` e entre novamente na sessão.
 
 ---
 
@@ -125,7 +176,9 @@ challenge-2/
 │   ├── routes/agente.py     # POST /agente e GET /saude
 │   ├── agents/
 │   │   ├── interprete.py    # agente 1
-│   │   └── coordenador.py   # agente 2
+│   │   └── coordenador.py   # agente 2 + tool de agenda
+│   ├── tools/
+│   │   └── agenda.py        # operações parametrizadas no PostgreSQL
 │   └── crews/crew.py        # a LLM, as duas tarefas e a Crew
 ├── docs/ARQUITETURA.md
 ├── whatsapp-bot/bot.js
@@ -140,6 +193,7 @@ challenge-2/
 | `app/crews/crew.py` | **O coração.** Define a LLM, as duas tarefas e a Crew que liga os agentes. `processar()` é a função que todo o resto chama. |
 | `app/agents/interprete.py` | Agente 1: papel, objetivo e história de quem lê a mensagem e extrai o compromisso. |
 | `app/agents/coordenador.py` | Agente 2: papel, objetivo e história de quem responde ao grupo. |
+| `app/tools/agenda.py` | Tool usada pelo Agente 2 para criar, consultar, alterar e deletar compromissos no PostgreSQL. |
 | `app/compromisso.py` | Modelo Pydantic do compromisso e os guardrails. Código determinístico, sem LLM — é o que impede o sistema de inventar dado ou mentir sobre agendamento. |
 | `app/routes/agente.py` | `POST /agente`, que recebe a mensagem e devolve resposta, compromisso e campos faltantes. |
 | `app/main.py` | Sobe o FastAPI e inclui o router. É o alvo do `uvicorn`. |

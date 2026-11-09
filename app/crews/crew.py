@@ -3,10 +3,8 @@
 
 Define a LLM, as duas tarefas e a sequencia: o agente 1 extrai o
 compromisso da mensagem e o agente 2 recebe essa saida pelo context e
-escreve a resposta ao grupo.
-
-Gravar o compromisso na agenda e uma etapa seguinte, ainda nao
-implementada. Por isso o agente 2 nao pode afirmar que agendou nada.
+escreve a resposta ao grupo. O agente 2 tambem possui a tool de agenda,
+que executa operacoes deterministicas no PostgreSQL.
 """
 
 from crewai import Task, Crew, Process, LLM
@@ -109,9 +107,14 @@ def tarefa_coordenar(agente, anterior):
             "(4) Se classificacao for 'cuidado' e nao houver responsavel "
             "confirmado, pergunte ao grupo quem podera acompanhar. Nunca "
             "atribua a tarefa a alguem.\n"
-            "(5) Nao diga que o compromisso foi agendado, marcado ou "
-            "registrado. Nada foi gravado em agenda nesta etapa.\n"
-            "(6) Quando classificacao nao for 'cuidado', nao resuma nada e "
+            "(5) Use a tool 'agenda' somente quando a acao estiver claramente "
+            "confirmada e todos os dados obrigatorios estiverem presentes. "
+            "Nunca invente valores para chamar a tool. Se a informacao estiver "
+            "incompleta, faca uma pergunta ao grupo.\n"
+            "(6) Depois de usar a tool, informe apenas o resultado retornado "
+            "por ela. Nunca diga que criou, alterou ou deletou algo se a tool "
+            "nao confirmar a operacao.\n"
+            "(7) Quando classificacao nao for 'cuidado', nao resuma nada e "
             "nao faca nenhuma pergunta. Responda em uma unica frase, decidida "
             "pelo valor do campo:\n"
             "   'conversa' - responda que nenhum compromisso foi identificado "

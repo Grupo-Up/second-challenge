@@ -142,13 +142,16 @@ Três obrigações:
 
 - **Pedir o que falta.** Se `data` ou `horario` estão nulos, pergunta. Se não há `responsavel`, pergunta quem pode acompanhar — e **nunca escolhe alguém**.
 - **Escrever a data por extenso.** O JSON traz `2026-11-05`; o grupo lê "05 de novembro de 2026". A conversão é regra do prompt, com a lista dos doze meses escrita nele. Não há código formatando data.
-- **Não mentir sobre agendamento.** Nada foi gravado em agenda nesta etapa.
+- **Não mentir sobre agendamento.** Só informar uma alteração na agenda
+  depois que a tool `agenda` devolver a confirmação da operação.
 
 ### Guardrail `validar_resposta`
 
 Em `app/compromisso.py:163`. Passa um regex procurando "agendei", "marquei", "registrei", "cadastrei", "coloquei na agenda". Achou? Rejeita e manda reescrever.
 
-Existe porque **nada é gravado em agenda nenhuma ainda**. Sem esse guardrail, a LLM diria "pronto, agendei!" — e a família confiaria num evento que não existe. Ver `CLAUDE.md` §4: _nunca informar que agendou se a API de calendário não confirmar a criação_.
+O guardrail continua impedindo afirmações sem confirmação. A tool é a única
+camada autorizada a executar SQL, e o coordenador só deve relatar o resultado
+que ela devolver. Ver `CLAUDE.md` §4: _nunca informar que agendou se a API de calendário não confirmar a criação_.
 
 ---
 
@@ -305,7 +308,10 @@ Teste mais curto, só para ver se o bot escuta o grupo: mande `!ping` → respon
 
 Nada aqui está decidido contra — é escopo não implementado.
 
-- **Gravação na agenda.** Nenhuma API de calendário conectada. O "Agente 2" do `CLAUDE.md` §5 prevê criar eventos; hoje ele só coordena a conversa. O provedor (Google Calendar, Outlook) continua em aberto — `CLAUDE.md` §10.
+- **Calendário externo e autorização.** A tool `agenda` grava compromissos no
+  PostgreSQL local, mas ainda não integra Google Calendar/Outlook nem verifica
+  permissões individuais. Essas integrações continuam pendentes —
+  `CLAUDE.md` §6 e §10.
 - **Memória entre mensagens.** Cada `!agenda` é independente. Se alguém responder "eu levo ela" na mensagem seguinte, o sistema não liga uma coisa na outra. O `CLAUDE.md` §3 passo 3 pede exatamente isso.
 
   A memória nativa do CrewAI (`Crew(memory=...)`) está **bloqueada por conflito de dependência**, não por decisão. Ela chama a LLM com `tools`, e `litellm/main.py:5295` importa o handler MCP sempre que há `tools` na chamada. O `crewai 1.15.28` exige `mcp~=1.28.1`; o `litellm 1.106.2` exige `mcp>=2.2.0`. O `CacheableResult` que o litellm importa só existe no `mcp` 2.x, então a execução quebra com `ImportError` em runtime. Os agentes sozinhos não usam `tools` — por isso só a memória falha. Caminhos possíveis: subir o `mcp` para 2.x e verificar se o CrewAI aguenta, ou esperar uma versão do CrewAI que alinhe a constraint.

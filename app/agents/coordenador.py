@@ -7,6 +7,8 @@ grupo: o que ficou entendido e o que ainda falta.
 
 from crewai import Agent
 
+from app.tools.agenda import AgendaTool
+
 
 def criar_coordenador(llm):
     """Monta o agente. A LLM vem da crew, que e quem a configura."""
@@ -28,5 +30,6 @@ def criar_coordenador(llm):
         allow_delegation=False,
         max_rpm=7999,
         max_iter=2,
+        tools=[AgendaTool()],
         # memory=True,
     )
