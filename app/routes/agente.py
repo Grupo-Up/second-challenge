@@ -8,7 +8,7 @@ compromisso estruturado.
 import os
 from typing import Optional
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from app.compromisso import faltantes
@@ -26,6 +26,10 @@ class Entrada(BaseModel):
     mensagem: str
     # Data da mensagem, base para interpretar "amanha" e "quinta-feira"
     data_mensagem: Optional[str] = None
+
+
+class Duvida(BaseModel):
+    pergunta: str
 
 
 @router.get("/saude")
@@ -64,3 +68,21 @@ def rodar(entrada: Entrada):
         "compromisso": compromisso,
         "faltantes": pendentes,
     }
+
+
+@router.post("/duvida")
+def responder_duvida(entrada: Duvida):
+    """Responde uma dúvida usando o Guia do Cuidador como fonte."""
+    pergunta = entrada.pergunta.strip()
+    if not pergunta:
+        raise HTTPException(status_code=400, detail="A pergunta não pode ficar vazia.")
+
+    try:
+        from app.agents.RAG import pergunta_ao_agente
+
+        return {"resposta": pergunta_ao_agente(pergunta)}
+    except (FileNotFoundError, ImportError) as erro:
+        raise HTTPException(
+            status_code=503,
+            detail="O RAG não está disponível. Instale as dependências e confira o PDF.",
+        ) from erro

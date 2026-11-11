@@ -152,6 +152,26 @@ Na primeira execução aparece um QR code — leia com o WhatsApp do celular. A 
 
 Depois, num grupo: `!ping` testa a conexão, `!agenda <mensagem>` aciona os agentes.
 
+Para testar o RAG no WhatsApp, use:
+
+```text
+!duvida quais cuidados ajudam a evitar quedas?
+```
+
+Para testar com mensagens enviadas pelo próprio número, inicie o bot com:
+
+```bash
+RESPONDER_PROPRIAS=1 node bot.js
+```
+
+O nome correto da variável é `RESPONDER_PROPRIAS`, e não
+`RESPOSTAS_PROPRIAS`.
+
+O comando consulta o Guia do Cuidador em `arquivos/` e responde usando apenas
+os trechos recuperados pelo RAG. Na primeira pergunta, o sistema pode demorar
+porque lê o PDF, gera os embeddings e baixa o modelo de embeddings. Enquanto
+a API continuar ligada, o índice fica em memória e é reutilizado.
+
 **Testando com o próprio número?** O bot ignora as próprias mensagens por padrão. Suba com `RESPONDER_PROPRIAS=1 node bot.js`.
 
 **Sem WhatsApp:** com a API no ar, chame direto:

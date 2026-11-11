@@ -3,4 +3,5 @@ __pycache__/
 .venv
 .crewai
 /whatsapp-bot/auth
+/whatsapp-bot/auth-backup
 /whatsapp-bot/node_modules
