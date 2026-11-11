@@ -7,9 +7,11 @@ import qrcode from 'qrcode-terminal';
 
 // Endereco da API que executa os agentes de IA
 const API_AGENTE = process.env.API_AGENTE ?? 'http://localhost:8000/agente';
+const API_DUVIDA = process.env.API_DUVIDA ?? 'http://localhost:8000/duvida';
 
 // Comando que aciona os agentes
 const COMANDO = '!agenda';
+const COMANDO_DUVIDA = '!duvida';
 
 // Grupos com um pedido ainda em andamento
 const emAndamento = new Set();
@@ -40,6 +42,21 @@ async function consultarAgente(mensagem, dataMensagem) {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ mensagem, data_mensagem: dataMensagem }),
+  });
+
+  if (!resposta.ok) {
+    throw new Error(`API respondeu ${resposta.status}`);
+  }
+
+  const dados = await resposta.json();
+  return dados.resposta;
+}
+
+async function consultarDuvida(pergunta) {
+  const resposta = await fetch(API_DUVIDA, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ pergunta }),
   });
 
   if (!resposta.ok) {
@@ -110,7 +127,11 @@ async function iniciarBot() {
         'ID do grupo:',
         grupo,
         '| comando reconhecido:',
-        conteudo.startsWith(COMANDO) || conteudo === '!ping' ? 'sim' : 'nao',
+        conteudo.startsWith(COMANDO) ||
+          conteudo.startsWith(COMANDO_DUVIDA) ||
+          conteudo === '!ping'
+          ? 'sim'
+          : 'nao',
       );
 
       // Responde ao comando de teste
@@ -121,6 +142,41 @@ async function iniciarBot() {
           });
         } catch (erro) {
           console.error('Erro ao responder:', erro);
+        }
+        continue;
+      }
+
+      if (conteudo.startsWith(COMANDO_DUVIDA)) {
+        const pergunta = conteudo.slice(COMANDO_DUVIDA.length).trim();
+
+        if (!pergunta) {
+          await bot.sendMessage(grupo, {
+            text: `Escreva a pergunta depois do comando. Exemplo: ${COMANDO_DUVIDA} quais cuidados são importantes para evitar quedas?`,
+          });
+          continue;
+        }
+
+        if (emAndamento.has(grupo)) {
+          await bot.sendMessage(grupo, {
+            text: 'Ainda estou analisando a mensagem anterior. Aguarde um instante.',
+          });
+          continue;
+        }
+
+        emAndamento.add(grupo);
+
+        try {
+          await bot.sendPresenceUpdate('composing', grupo);
+          const resposta = await consultarDuvida(pergunta);
+          await bot.sendMessage(grupo, { text: resposta });
+        } catch (erro) {
+          console.error('Erro ao consultar o RAG:', erro);
+          await bot.sendMessage(grupo, {
+            text: 'Não consegui consultar o Guia do Cuidador agora. Tente novamente em instantes.',
+          });
+        } finally {
+          emAndamento.delete(grupo);
+          await bot.sendPresenceUpdate('paused', grupo);
         }
         continue;
       }
