@@ -1,6 +1,7 @@
 import pandas as pd
 import matplotlib.pyplot as plt
 from sklearn.model_selection import train_test_split
+from pathlib import Path
 
 FATOR_TUKEY = 1.5
 LIMITE_VIF_MODERADO = 5
@@ -8,6 +9,31 @@ LIMITE_VIF_ALTO = 10
 NOMES_CLASSES = {0: "no fall", 1: "uncertain", 2: "fall"}
 
 # Carregando o dataset
+path = Path("rede")
+
+lista_dfs = []
+
+# 2. Percorre cada pasta de classe
+for pasta_classe in path.iterdir():
+    if pasta_classe.is_dir():
+        nome_classe = pasta_classe.name
+        
+        # 3. Busca todos os CSVs dentro da pasta da classe (inclusive em subpastas)
+        for arquivo_csv in pasta_classe.rglob("*.csv"):
+            df_temp = pd.read_csv(arquivo_csv)
+            
+            # Adiciona a classe (nome da pasta) e a origem do arquivo
+            df_temp["classe"] = nome_classe
+            df_temp["arquivo_id"] = arquivo_csv.stem
+            
+            lista_dfs.append(df_temp)
+
+# 4. Junta tudo em um único DataFrame
+dataset_completo = pd.concat(lista_dfs, ignore_index=True)
+
+print(dataset_completo.head())
+print(dataset_completo["classe"].value_counts())
+
 df = pd.read_csv('dataset.csv')
 df_test, df_train = df[df['split'] == 'test'], df[df['split'] == 'train']
 
