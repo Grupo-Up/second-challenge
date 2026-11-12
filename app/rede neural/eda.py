@@ -2,27 +2,41 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from sklearn.model_selection import train_test_split
 from pathlib import Path
+from typing import Callable, Dict, List, Optional, Sequence, Tuple, Union
 
 FATOR_TUKEY = 1.5
 LIMITE_VIF_MODERADO = 5
 LIMITE_VIF_ALTO = 10
-NOMES_CLASSES = {0: "no fall", 1: "uncertain", 2: "fall"}
+NOMES_CLASSES = {"F01":"Fall forward while walking caused by a slip", 
+                "F02":"Lateral fall while walking caused by a slip",
+                "F03":"Fall backward while walking caused by a slip",
+                "F04":"Fall forward while walking caused by a trip",
+                "F05":"Fall backward when trying to sit down",
+                "F06":"Fall forward while sitting, caused by fainting or falling asleep",
+                "F07":"Fall backward while sitting, caused by fainting or falling asleep",
+                "F08":"Lateral fall while sitting, caused by fainting or falling asleep}",
+                "D01":"Walking",
+                "D02":"Jogging",
+                "D03":"Walking up and downstairs",
+                "D04":"Sitting on a chair, wait a moment, and get up",
+                "D05":"Sitting a moment, attempt to get up and collapse into a chair",
+                "D06":"Crouching (bending at the knees), tie shoes, and get up",
+                "D07":"Stumble while walking",
+                "D08":"Gently jump without falling (trying to reach high object)",
+                "D09":"Hit table with hand",
+                "D10":"Clapping Hands",
+                "D11":"Opening and closing door"}
 
 # Carregando o dataset
-path = Path("rede")
+path = Path("./app/rede neural/dataset")
 
 lista_dfs = []
 
-# 2. Percorre cada pasta de classe
 for pasta_classe in path.iterdir():
     if pasta_classe.is_dir():
         nome_classe = pasta_classe.name
-        
-        # 3. Busca todos os CSVs dentro da pasta da classe (inclusive em subpastas)
         for arquivo_csv in pasta_classe.rglob("*.csv"):
             df_temp = pd.read_csv(arquivo_csv)
-            
-            # Adiciona a classe (nome da pasta) e a origem do arquivo
             df_temp["classe"] = nome_classe
             df_temp["arquivo_id"] = arquivo_csv.stem
             
@@ -34,12 +48,12 @@ dataset_completo = pd.concat(lista_dfs, ignore_index=True)
 print(dataset_completo.head())
 print(dataset_completo["classe"].value_counts())
 
-df = pd.read_csv('dataset.csv')
-df_test, df_train = df[df['split'] == 'test'], df[df['split'] == 'train']
+#df = pd.read_csv('dataset.csv')
+#df_test, df_train = df[df['split'] == 'test'], df[df['split'] == 'train']
 
-no_fall-train = df_train[df_train['Decision'] == 0]
-uncertain-train = df_train[df_train['Decision'] == 1]
-fall-train = df_train[df_train['Decision'] == 2]
+#no_fall-train = df_train[df_train['Decision'] == 0]
+#uncertain-train = df_train[df_train['Decision'] == 1]
+#fall-train = df_train[df_train['Decision'] == 2]
 
 #Funções de análise exploratória de dados (EDA)
 def resumo_descritivo(features: pd.DataFrame, casas_moda: int = 3) -> pd.DataFrame:
