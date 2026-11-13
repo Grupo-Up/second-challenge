@@ -37,7 +37,7 @@ features_validas = df_train.select_dtypes(include="number")
 features_validas = features_validas.drop(columns=["time"])
 #Funções de análise exploratória de dados (EDA)
 def resumo_descritivo(features: pd.DataFrame, casas_moda: int = 3) -> pd.DataFrame:
-    """Estatísticas descritivas vetorizadas, uma linha por feature."""
+    """Estatísticas descritivas vetorizadas, uma linha por feature, considerando faixas de tempo."""
     features_numericas = features.select_dtypes(include="number").drop(
         columns=["time"], errors="ignore"
     )

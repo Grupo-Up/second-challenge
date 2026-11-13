@@ -1,0 +1,7 @@
+matplotlib
+numpy
+pandas
+ruptures>=1.1.9
+scikit-learn
+seaborn
+statsmodels
