@@ -8,8 +8,6 @@ from sklearn.preprocessing import StandardScaler, LabelEncoder
 from sklearn.model_selection import train_test_split
 import joblib
 
-# --- 1. CARREGAMENTO E PREPARAÇÃO DOS DADOS ---
-print("Carregando o dataset limpo...")
 df = pd.read_csv('dataset-limpo.csv')
 
 colunas_features = [
@@ -19,12 +17,11 @@ colunas_features = [
     'orientation_s_list', 'orientation_i_list', 'orientation_j_list', 'orientation_k_list'
 ]
 
-# Codifica as classes de texto ('F04', 'D01', etc.) para números inteiros
 encoder = LabelEncoder()
 df['classe_num'] = encoder.fit_transform(df['classe'])
 joblib.dump(encoder, 'encoder_classes.pkl')
 
-# Padroniza as features dos sensores globalmente
+# Padroniza as features dos sensore
 scaler = StandardScaler()
 df[colunas_features] = scaler.fit_transform(df[colunas_features])
 joblib.dump(scaler, 'scaler_weda.pkl')
@@ -38,7 +35,6 @@ for id_val, grupo in df.groupby('id_'):
     X_sequences.append(seq_features)
     y_labels.append(rotulo)
 
-# Padroniza o tamanho das sequências para a LSTM
 MAX_LEN = 400
 X_pad = pad_sequences(X_sequences, maxlen=MAX_LEN, padding='post', dtype='float32')
 y_arr = np.array(y_labels)
