@@ -2,6 +2,8 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from sklearn.model_selection import train_test_split
 from pathlib import Path
+from statsmodels.stats.outliers_influence import variance_inflation_factor
+import seaborn as sns
 
 FATOR_TUKEY = 1.5
 LIMITE_VIF_MODERADO = 5
@@ -80,6 +82,7 @@ def resumo_por_classe(features: pd.DataFrame, label: pd.Series) -> pd.DataFrame:
     for valor in sorted(label.dropna().unique()):
         resumo = resumo_descritivo(features.loc[label == valor])
         resumo.insert(0, "classe", NOMES_CLASSES.get(valor, str(valor)))
+        resumo.to_csv(f'./app/rede-neural/analysis-{valor}.csv', index=False, encoding='utf-8')
         resumos.append(resumo)
 
     if not resumos:
@@ -104,7 +107,76 @@ def create_histograms():
             plt.close(fig)
     return
 
-df_analysis = resumo_por_classe(df_train, df_train["classe"])
-df_analysis.to_csv('./app/rede-neural/analysis.csv', index=False, encoding='utf-8')
+def create_boxplots():
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    for coluna in list(features_validas.columns):
+        coluna_dir = OUTPUT_DIR / str(coluna)
+        coluna_dir.mkdir(parents=True, exist_ok=True)
+        fig, ax = plt.subplots(figsize=(10, 6))
+        df_train.boxplot(column=coluna, by='classe', ax=ax)
+        ax.set_title(f'Boxplot de {coluna} por Classe')
+        ax.set_xlabel('Classe')
+        ax.set_ylabel(coluna)
+        plt.suptitle('')  # Remove the automatic title to avoid overlap
+        plt.xticks(rotation=45)
+        plt.grid(axis='y', linestyle='--', alpha=0.7)
+        fig.tight_layout()
+        fig.savefig(coluna_dir / f'boxplot_{coluna}.png', dpi=300, bbox_inches='tight')
+        plt.close(fig)
+    return
+
+def plot_correlation_matrix(features: pd.DataFrame):
+    """Plota a matriz de correlação entre as features numéricas."""
+    corr_matrix = features.corr()
+    plt.figure(figsize=(12, 10))
+    plt.title('Matriz de Correlação', fontsize=16)
+    sns.heatmap(corr_matrix, annot=True, fmt=".2f", cmap='coolwarm', square=True, cbar_kws={"shrink": .8})
+    plt.xticks(rotation=45)
+    plt.yticks(rotation=0)
+    plt.tight_layout()
+    plt.savefig(OUTPUT_DIR / 'correlation_matrix.png', dpi=300, bbox_inches='tight')
+    plt.close()
+
+def calculate_vif(features: pd.DataFrame) -> pd.DataFrame:
+    """Calcula o Variance Inflation Factor (VIF) para cada feature numérica."""
+    features_numericas = features.select_dtypes(include="number")
+    vif_data = pd.DataFrame()
+    vif_data["feature"] = features_numericas.columns
+    vif_data["VIF"] = [variance_inflation_factor(features_numericas.values, i) for i in range(features_numericas.shape[1])]
+    
+    return vif_data.sort_values(by="VIF", ascending=False)
+
+def plot_values(features: pd.DataFrame):
+    """Plota a distribuição dos valores de uma feature específica."""
+    for coluna in list(features_validas.columns):
+        coluna_dir = OUTPUT_DIR / str(coluna)
+        coluna_dir.mkdir(parents=True, exist_ok=True)
+        for classe in NOMES_CLASSES.keys():
+            df_classe = features[features["classe"] == classe]
+            plt.figure(figsize=(10, 6))
+            x = df_classe["time"].dropna()
+            y = df_classe[coluna].dropna()
+            sns.kdeplot(
+            x=x, y=y, 
+            fill=True,          
+            cmap="Reds",        
+            alpha=0.6,          
+            levels=5            
+            )
+
+            plt.scatter(x, y, color="black", s=15, alpha=0.5, label="Dados")
+            plt.title(f'Distribuição de {coluna} (Classe: {classe})', fontsize=16)
+            plt.xlabel('Tempo')
+            plt.ylabel(coluna)
+            plt.legend()
+            plt.tight_layout()
+            plt.savefig(coluna_dir / f'distribution_{coluna}_class_{classe}.png', dpi=300, bbox_inches='tight')
+            plt.close()
+#criar datasets de análise
+#df_analysis = resumo_por_classe(df_train, df_train["classe"])
+#df_analysis.to_csv('./app/rede-neural/analysis-complete.csv', index=False, encoding='utf-8')
+plot_values(df_train)
+#plot_correlation_matrix(features_validas)
+#calculate_vif(features_validas).to_csv('./app/rede-neural/vif_analysis.csv', index=False, encoding='utf-8')
 
 #fazer correlacao com classes e vif!!! 
