@@ -1,6 +1,7 @@
 __pycache__/
 .env
+# Estado das conversas: contem dado de saude (CLAUDE.md, secao 8)
+/dados
 .venv
-.crewai
 /whatsapp-bot/auth
 /whatsapp-bot/node_modules

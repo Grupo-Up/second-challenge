@@ -164,13 +164,17 @@ A rede neural ainda **não tem função definitivamente escolhida**. Uma possibi
 - Valor principal: captar informações de compromissos e organizá-las na agenda de um responsável.
 - A organização dos cuidados deve ser colaborativa, sem substituir a autonomia das pessoas.
 - O protótipo pode usar dados fictícios e cenários simulados.
+- **Entrada por comandos explícitos** (decisão de 10/11/2026): `!agenda` informa, `!compromisso` mostra o combinado sem usar IA, `!andamento` responde pergunta livre sobre o compromisso em aberto, `!ajuda` lista tudo. O comando declara a intenção, então o roteamento do grafo é determinístico — nenhuma LLM classifica a entrada. Mensagem sem `!` não chega à API.
+- **Histórico limitado às últimas 12 falas do grupo** (decisão de 10/11/2026). O bastante para entender referência ("ela", "essa consulta") e para o grupo responder a uma pergunta do assistente. Não é a conversa inteira: o prompt cresceria sem teto e contraria a minimização da §8.
+- **Retenção: o mínimo necessário** (decisão de 10/11/2026). Fora as 12 falas do histórico, o texto cru não fica gravado — só o compromisso estruturado. Compromisso concluído tem o thread apagado, o que também significa que **não pode ser consultado depois**; guardar histórico exigiria um registro próprio, ainda não decidido. `RETER_HISTORICO=1` mantém tudo, só para desenvolvimento.
+- **Memória da conversa: checkpointer do LangGraph, um thread por grupo** (decisão de 10/11/2026). O compromisso é acumulado ao longo das mensagens do grupo; mensagem que contradiz o combinado não sobrescreve, gera pergunta. Um compromisso aberto por grupo de cada vez. Estado em SQLite local, fora do repositório.
+- **Framework de agentes: LangGraph** (decisão de 10/11/2026). O projeto começou em CrewAI e migrou. Motivo: o roteamento entre os agentes e os guardrails passaram a ser arestas explícitas do grafo, em vez de parâmetros de framework, e o conflito de dependência que bloqueava a memória no CrewAI deixou de existir. Detalhes em [`docs/ARQUITETURA.md`](docs/ARQUITETURA.md) §11.
 
 ### Ainda não definido - não presumir como decisão
 
 - Canal de mensagens (WhatsApp, outro mensageiro ou interface própria).
 - Método autorizado de acesso às mensagens e suas eventuais limitações.
 - Provedor de calendário (Google Calendar, Outlook ou outro).
-- Framework de agentes (CrewAI, LangChain, LangGraph ou outro).
 - Modelo de linguagem, API, custos e infraestrutura de execução.
 - Papel final da rede neural, dataset e métricas de treinamento.
 - Banco de dados e tecnologias definitivas do frontend/backend.

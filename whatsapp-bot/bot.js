@@ -8,14 +8,50 @@ import qrcode from 'qrcode-terminal';
 // Endereco da API que executa os agentes de IA
 const API_AGENTE = process.env.API_AGENTE ?? 'http://localhost:8000/agente';
 
-// Comando que aciona os agentes
-const COMANDO = '!agenda';
+// Comandos que acionam os agentes. A chave vai para a API e decide por
+// onde a mensagem entra no grafo.
+const COMANDOS = {
+  '!agenda': 'agenda',
+  '!compromisso': 'compromisso',
+  '!andamento': 'andamento',
+};
+
+// Comandos que o proprio bot responde, sem chamar a API
+const AJUDA =
+  'Comandos deste assistente:\n\n' +
+  '!agenda <informacao> - informa uma consulta, exame ou retorno, ' +
+  'o horario, o local ou quem vai acompanhar.\n' +
+  'Exemplo: !agenda a vo Helena tem consulta no cardiologista quinta as 15h\n\n' +
+  '!compromisso - mostra o que ja esta combinado e o que ainda falta.\n\n' +
+  '!andamento <pergunta> - pergunta sobre o compromisso em aberto.\n' +
+  'Exemplo: !andamento quem vai levar a vo?\n\n' +
+  '!ajuda - mostra esta lista.\n\n' +
+  'Nada e gravado em agenda nesta etapa: o assistente apenas organiza ' +
+  'a informacao e confirma com o grupo.';
+
+// Tira acento para variantes acentuadas do comando valerem igual
+function semAcento(texto) {
+  return texto.normalize('NFD').replace(/[̀-ͯ]/g, '');
+}
+
+// Separa o comando do resto da mensagem
+function lerComando(conteudo) {
+  const [primeira, ...resto] = conteudo.trim().split(/\s+/);
+  const comando = semAcento(primeira).toLowerCase();
+
+  return { comando, texto: resto.join(' ').trim() };
+}
 
 // Grupos com um pedido ainda em andamento
 const emAndamento = new Set();
 
 // Responde tambem as mensagens do proprio numero, para testar sozinho
 const RESPONDER_PROPRIAS = process.env.RESPONDER_PROPRIAS === '1';
+
+// Com DEBUG_BOT=1 registra o estado da conexao e os metadados de cada
+// evento recebido, antes dos descartes. So metadados: nenhum conteudo de
+// mensagem vai para o log (CLAUDE.md, secao 8).
+const DEBUG_BOT = process.env.DEBUG_BOT === '1';
 
 // Algumas mensagens chegam embrulhadas (mensagens temporarias,
 // visualizacao unica), entao desembrulha antes de ler o texto
@@ -35,11 +71,19 @@ function extrairTexto(message) {
 
 // Envia a mensagem para a API e devolve a resposta dos agentes.
 // A data serve de referencia para "amanha", "quinta-feira" e afins.
-async function consultarAgente(mensagem, dataMensagem) {
+// O grupo vai junto: e ele que separa o compromisso de uma familia do de
+// outra, e o que liga "eu levo ela" a consulta combinada antes.
+async function consultarAgente(mensagem, dataMensagem, grupo, autor, comando) {
   const resposta = await fetch(API_AGENTE, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ mensagem, data_mensagem: dataMensagem }),
+    body: JSON.stringify({
+      mensagem,
+      data_mensagem: dataMensagem,
+      grupo,
+      autor,
+      comando,
+    }),
   });
 
   if (!resposta.ok) {
@@ -66,6 +110,17 @@ async function iniciarBot() {
   bot.ev.on('connection.update', (update) => {
     const { connection, qr, lastDisconnect } = update;
 
+    if (DEBUG_BOT) {
+      console.log(
+        '[debug] connection.update:',
+        connection ?? '(sem mudanca)',
+        '| qr:',
+        qr ? 'sim' : 'nao',
+        '| statusCode:',
+        lastDisconnect?.error?.output?.statusCode ?? '-',
+      );
+    }
+
     if (qr) {
       qrcode.generate(qr, { small: true });
     }
@@ -90,6 +145,22 @@ async function iniciarBot() {
 
   // Escuta novas mensagens
   bot.ev.on('messages.upsert', async ({ messages, type }) => {
+    // Antes de qualquer descarte: e aqui que se ve se a mensagem chegou
+    if (DEBUG_BOT) {
+      for (const msg of messages) {
+        console.log(
+          '[debug] upsert | type:',
+          type,
+          '| fromMe:',
+          msg.key.fromMe === true,
+          '| jid:',
+          msg.key.remoteJid,
+          '| tem texto:',
+          extrairTexto(msg.message).length > 0,
+        );
+      }
+    }
+
     if (type !== 'notify') return;
 
     for (const msg of messages) {
@@ -103,37 +174,45 @@ async function iniciarBot() {
 
       const conteudo = extrairTexto(msg.message).trim();
 
-      // Registra apenas o grupo e se o comando foi reconhecido.
-      // Conteudo de mensagem nao vai para o log: pode conter dados de
-      // saude e outros dados pessoais (CLAUDE.md, secao 8).
-      console.log(
-        'ID do grupo:',
-        grupo,
-        '| comando reconhecido:',
-        conteudo.startsWith(COMANDO) || conteudo === '!ping' ? 'sim' : 'nao',
-      );
+      // Conversa comum nao e processada, para nao mandar o grupo inteiro
+      // para a API (CLAUDE.md, secao 8)
+      if (!conteudo.startsWith('!')) continue;
 
-      // Responde ao comando de teste
-      if (conteudo === '!ping') {
+      const { comando, texto: pedido } = lerComando(conteudo);
+
+      // Registra apenas o grupo e qual comando foi usado. Conteudo de
+      // mensagem nao vai para o log: pode conter dados de saude e outros
+      // dados pessoais (CLAUDE.md, secao 8).
+      console.log('ID do grupo:', grupo, '| comando:', comando);
+
+      // Comando de teste
+      if (comando === '!ping') {
         try {
-          await bot.sendMessage(grupo, {
-            text: 'Bot funcionando!',
-          });
+          await bot.sendMessage(grupo, { text: 'Bot funcionando!' });
         } catch (erro) {
           console.error('Erro ao responder:', erro);
         }
         continue;
       }
 
-      // Aciona os agentes apenas com o comando, para nao chamar
-      // a API a cada mensagem do grupo
-      if (!conteudo.startsWith(COMANDO)) continue;
+      // A ajuda e respondida aqui mesmo: nao depende da API estar no ar,
+      // que e justamente quando a pessoa mais precisa dela
+      if (comando === '!ajuda' || !COMANDOS[comando]) {
+        try {
+          await bot.sendMessage(grupo, { text: AJUDA });
+        } catch (erro) {
+          console.error('Erro ao responder:', erro);
+        }
+        continue;
+      }
 
-      const pedido = conteudo.slice(COMANDO.length).trim();
-
-      if (!pedido) {
+      // !compromisso nao leva texto; os outros dois precisam
+      if (!pedido && comando !== '!compromisso') {
         await bot.sendMessage(grupo, {
-          text: `Escreva a informacao depois do comando. Exemplo: ${COMANDO} a vo Helena tem consulta no cardiologista quinta-feira as 15h.`,
+          text:
+            comando === '!andamento'
+              ? 'Escreva a pergunta depois do comando. Exemplo: !andamento quem vai levar a vo?'
+              : 'Escreva a informacao depois do comando. Exemplo: !agenda a vo Helena tem consulta no cardiologista quinta-feira as 15h.',
         });
         continue;
       }
@@ -158,7 +237,17 @@ async function iniciarBot() {
         )
           .toLocaleDateString('sv-SE', { timeZone: 'America/Sao_Paulo' });
 
-        const resposta = await consultarAgente(pedido, dataMensagem);
+        // Nome de quem escreveu. E o que permite resolver "eu levo ela":
+        // sem ele, "eu" nao identifica ninguem e o responsavel fica nulo.
+        const autor = msg.pushName ?? null;
+
+        const resposta = await consultarAgente(
+          pedido,
+          dataMensagem,
+          grupo,
+          autor,
+          COMANDOS[comando],
+        );
 
         await bot.sendMessage(grupo, { text: resposta });
       } catch (erro) {

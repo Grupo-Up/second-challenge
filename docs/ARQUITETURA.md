@@ -15,9 +15,13 @@ challenge-2/
 │   ├── compromisso.py       # modelo de dados e guardrails — sem IA
 │   ├── routes/agente.py     # POST /agente e GET /saude
 │   ├── agents/
-│   │   ├── interprete.py    # agente 1
-│   │   └── coordenador.py   # agente 2
-│   └── crews/crew.py        # a LLM, as duas tarefas e a Crew
+│   │   ├── interprete.py    # agente 1 — quem ele é
+│   │   └── coordenador.py   # agente 2 — quem ele é
+│   └── graph/
+│       ├── estado.py        # o estado que atravessa o grafo
+│       ├── prompts.py       # o que se pede a cada agente
+│       ├── nos.py           # os nós e as arestas condicionais
+│       └── grafo.py         # monta o grafo e expõe processar()
 ├── docs/                    # este arquivo
 ├── whatsapp-bot/bot.js      # o bot
 ├── CLAUDE.md
@@ -29,11 +33,14 @@ challenge-2/
 | `whatsapp-bot/bot.js`    | Escuta o WhatsApp, reconhece o comando, devolve a resposta ao grupo | Sim — `node bot.js`               |
 | `app/main.py`            | Sobe a API e registra as rotas                                      | Sim — `uvicorn app.main:app`      |
 | `app/routes/agente.py`   | Expõe `POST /agente`, faz a ponte entre o bot e os agentes          | Não — módulo                      |
-| `app/crews/crew.py`      | Define a LLM, as duas tarefas e a Crew                              | Não — módulo                      |
+| `app/graph/grafo.py`     | Monta o grafo e expõe `processar()`                                 | Não — módulo                      |
+| `app/graph/nos.py`       | A LLM, os nós e as funções de roteamento                            | Não — módulo                      |
+| `app/graph/prompts.py`   | O que se pede a cada agente e as respostas fixas                    | Não — módulo                      |
+| `app/graph/estado.py`    | O `EstadoGrupo` e o limite de tentativas                            | Não — módulo                      |
 | `app/agents/*.py`        | Define cada agente: papel, objetivo e história                      | Não — módulos                     |
 | `app/compromisso.py`     | Modelo de dados e guardrails determinísticos                        | Não — módulo                      |
 
-Os agentes ficam separados das tarefas de propósito: **quem é o agente** muda pouco, **o que se pede a ele** muda a cada ajuste de regra. Em arquivos diferentes, mexer numa regra não arrisca o outro.
+Os agentes ficam separados do que se pede a eles de propósito: **quem é o agente** muda pouco, **o que se pede a ele** muda a cada ajuste de regra. Em arquivos diferentes, mexer numa regra não arrisca o outro. Por isso a persona mora em `app/agents/` e o prompt da tarefa em `app/graph/prompts.py`.
 
 ### O caminho de uma mensagem
 
@@ -47,27 +54,212 @@ bot.js              ← processo Node. Escuta o WhatsApp.
 routes/agente.py    ← processo uvicorn na porta 8000. POST /agente
         │              Chama processar(mensagem, data)
         ▼
-crews/crew.py       ← monta a Crew e roda os DOIS agentes em sequência
-        │
-        ├─ AGENTE 1 ─► JSON do compromisso
-        │                    │
-        │                    ▼ (context)
-        └─ AGENTE 2 ─► texto da resposta ao grupo
+graph/grafo.py      ← invoca o grafo com um estado novo
         │
         ▼
+```
+
+```text
+        __start__
+            │
+            ▼
+      ┌─ interpretar ◄──────────────┐  AGENTE 1 — chama a LLM
+      │     │                       │
+      │     ▼                       │ erro, se ainda há tentativa
+      │  validar_extracao ──────────┘  guardrail — sem LLM
+      │     │
+      │     ├─ 3 tentativas sem JSON válido ─► falha_extracao ─► __end__
+      │     │
+      │     ├─ classificacao ≠ cuidado ──────► resposta_fixa ──► __end__
+      │     │                                  (sem LLM)
+      │     ▼ classificacao = cuidado
+      │  fundir                        junta com o combinado — sem LLM
+      │     │
+      │     ├─ contradiz o combinado ──────► perguntar_conflito ─► __end__
+      │     │                                 (sem LLM)
+      │     ▼
+      │  coordenar ◄──────────────────┐  AGENTE 2 — chama a LLM
+      │     │                         │
+      │     ▼                         │ erro, se ainda há tentativa
+      │  validar_resposta ────────────┘  guardrail — sem LLM
+      │     │
+      │     ├─ 3 tentativas reprovadas ─────► falha_coordenacao ─┐
+      │     │                                                    │
+      └─────▼ encerrar ───────────────────────────────────────►  │
+                                                                 ▼
+                                              todos os caminhos: limpar ─► __end__
+```
+
+Os cinco caminhos terminais passam por `limpar` antes do fim. É ele que tira o texto cru da conversa do estado, antes de o checkpointer gravar.
+
+```text
 routes/agente.py devolve {resposta, compromisso, faltantes}
         │
         ▼
 bot.js envia o texto da "resposta" no grupo
 ```
 
-Os agentes **não ficam rodando**. Eles nascem, trabalham e morrem a cada comando — `montar_crew()` (`app/crews/crew.py:135`) cria tudo do zero dentro de `processar()`. Isso é proposital: agentes e tarefas do CrewAI guardam o resultado da última execução, então reaproveitar os mesmos objetos misturaria o contexto de conversas diferentes.
+### O Roteador: a entrada é o comando
+
+O grafo tem três portas de entrada, escolhidas por `rumo_inicial()` (`app/graph/nos.py`) a partir do comando que a pessoa usou no grupo:
+
+| Comando | Entra em | Chama LLM? |
+| --- | --- | --- |
+| `!agenda <texto>` | `interpretar` — os dois agentes | sim |
+| `!compromisso` | `responder_compromisso` | **não** |
+| `!andamento <pergunta>` | `responder_andamento` | sim, uma vez |
+
+Este é o **Roteador** do desenho original no LangGraph Builder, mas determinístico: quem escolhe o comando já declarou a intenção, então não há o que uma LLM precise classificar na entrada. Mais barato e sem chance de errar.
+
+`!ajuda` e `!ping` nem chegam à API — o `bot.js` responde sozinho. A ajuda é justamente o que a pessoa procura quando algo não está funcionando, e não faz sentido depender da API no ar para obtê-la. Qualquer `!` desconhecido também cai na ajuda, em vez de ser ignorado em silêncio.
+
+### `!compromisso` — sem LLM nenhuma
+
+`resumir()` (`app/compromisso.py`) formata o estado direto em texto. Zero token, zero latência, e nenhuma chance de inventar um dado que não está ali. Campo vazio vira "ainda nao informado", explicitamente.
+
+### `!andamento` — pergunta livre, com guardrail próprio
+
+O agente recebe o compromisso acumulado e as últimas falas, e responde só a partir deles. Sem compromisso em aberto, responde um texto fixo sem acionar LLM: não havendo dado, qualquer resposta gerada seria invenção.
+
+O guardrail é o `validar_andamento()` (`app/compromisso.py`), que soma ao `validar_resposta` uma checagem própria da pergunta livre:
+
+| Situação | Resultado |
+| --- | --- |
+| compromisso **sem data** e a resposta cita mês ou dd/mm | reprova, manda dizer que não foi informada |
+| compromisso **sem horário** e a resposta cita `15h` ou `15:00` | reprova, idem |
+
+Sem isso, "quando é a consulta?" com data nula é um convite ao chute — e um evento com data inventada é o não-sucesso explícito do `CLAUDE.md` §7.
+
+---
+
+O roteamento de classificação, por sua vez, acontece **depois** da extração, não antes. É o Agente 1 que produz o campo `classificacao`, e sem ele não há como saber se vale chamar o Agente 2. Um roteador antes dos agentes teria que reclassificar a mensagem por conta própria — uma terceira chamada de LLM decidindo o mesmo que o Agente 1 já decide.
+
+O grafo compilado (`app/graph/grafo.py:113`) é montado **uma vez só**, na importação, e reaproveitado entre pedidos. Isso é seguro porque ele não guarda estado: o estado mora no checkpointer, separado por `thread_id`. A versão anterior, em CrewAI, precisava remontar a Crew a cada chamada — agentes e tarefas guardavam o resultado da última execução, e reaproveitá-los misturaria o contexto de conversas diferentes.
+
+---
+
+## 1a. Memória entre mensagens
+
+O grupo não combina um compromisso numa mensagem só. Combina em três:
+
+```text
+"a vó helena tem uma consulta amanhã"           → tipo, pessoa, data
+"é uma consulta com cardiologista, às 15h"      → especialidade, horário
+"a maysa a acompanhará"                         → responsável
+```
+
+Cada extração está correta **para a sua mensagem**. O que junta as três é o checkpointer do LangGraph (`app/graph/grafo.py:109`) mais o nó `fundir` (`app/graph/nos.py:141`).
+
+### `thread_id`: o JID do grupo
+
+O `bot.js` manda o JID do grupo junto com a mensagem; a rota repassa; o `processar()` usa como `thread_id`. É isso que separa a conversa de uma família da de outra — sem ele, todos os grupos dividiriam um thread só e o compromisso de uma família apareceria na resposta de outra.
+
+O estado fica em `dados/conversas.sqlite`, **fora do repositório** (`.gitignore`): contém dado de saúde (`CLAUDE.md` §8).
+
+### `fundir`: acumular sem sobrescrever
+
+Código determinístico, sem LLM. A regra é conservadora:
+
+- Campo que a mensagem nova informa, entra.
+- Campo que ela deixa nulo, **preserva o valor anterior**. Quem não mencionou o horário não está cancelando o horário.
+- Campo que ela **contradiz**, não funde: marca conflito.
+
+A contradição é tratada em `perguntar_conflito` (`app/graph/nos.py:181`), que responde ao grupo sem alterar nada:
+
+```text
+Esta informacao nao bate com o que ja estava combinado
+(data: antes 2026-11-20, agora 2026-11-25). Isso e uma remarcacao do
+mesmo compromisso ou um compromisso diferente? Nada foi alterado ate
+alguem confirmar.
+```
+
+Fundir no escuro misturaria duas consultas numa só — exatamente a duplicidade que o `CLAUDE.md` §4 manda evitar. Perguntar é a resposta honesta enquanto o sistema não souber distinguir remarcação de compromisso novo.
+
+Quais campos contam como contradição está em `CAMPOS_EXCLUDENTES` (`app/graph/estado.py:29`). `responsavel` fica de fora de propósito: trocar quem acompanha é combinação normal do grupo, não sinal de que mudou o compromisso.
+
+### `encerrar`: quando o thread recomeça
+
+Em `app/graph/nos.py:198`. O compromisso fecha quando não falta nenhum campo obrigatório **e** há responsável. A partir daí, a próxima mensagem do grupo começa um compromisso novo em vez de somar neste.
+
+O responsável entra na conta embora não seja obrigatório: o assistente acabou de perguntar quem acompanha, e encerrar antes da resposta chegar faria o "eu levo ela" seguinte cair num compromisso novo e vazio.
+
+**Fechado não significa agendado.** Nada foi gravado em agenda nenhuma.
+
+### Quem é "eu"
+
+O `bot.js` manda também o `pushName` de quem escreveu. Sem ele, "eu levo ela" não preenche responsável nenhum — e está certo assim: "eu" não identifica ninguém, e o `CLAUDE.md` §6 proíbe atribuir a tarefa a alguém sem confirmação. Com o autor, a regra (4a) do prompt resolve a primeira pessoa: quem aceitou é quem escreveu.
+
+O nome do autor **não vai para o log**: é dado pessoal (`CLAUDE.md` §8).
+
+### Histórico do grupo
+
+O estado guarda as **últimas 12 falas** do grupo (`MAX_HISTORICO`, `app/graph/estado.py:49`), contando mensagens e respostas do assistente. Elas vão no prompt do Agente 1 (`HISTORICO`, `app/graph/prompts.py:118`).
+
+As respostas do assistente entram junto de propósito: sem elas, o agente não tem como saber que uma fala curta — "sim, foi" — está respondendo a uma pergunta dele.
+
+O limite existe por dois motivos. O prompt cresce a cada fala guardada, e no free tier do Groq (8000 TPM) isso vira erro 429 rápido. E conversa gravada é conteúdo bruto, que o `CLAUDE.md` §8 manda evitar — guardar as últimas falas resolve a referência sem virar arquivo da vida do grupo.
+
+O histórico **informa, não decide**. A fonte de verdade continua sendo o `compromisso` estruturado, validado pelos guardrails. O prompt diz ao agente para usar as falas só para entender a quem a mensagem se refere, não para reextrair dado antigo.
+
+### Remarcação: fechando o ciclo do conflito
+
+A pergunta de conflito era um beco sem saída — o assistente perguntava "é remarcação ou compromisso diferente?" e ninguém conseguia responder. Agora responde, por duas vias:
+
+| Via | Quando | Onde |
+| --- | --- | --- |
+| Campo `remarcacao` na extração | a própria mensagem diz que mudou: "na verdade é dia 25" | `app/compromisso.py`, modelo `Compromisso` |
+| `confirma_remarcacao()` | a mensagem confirma a pergunta do assistente: "sim, foi remarcado" | `app/compromisso.py:59` |
+
+A segunda via é regex, não LLM — e isso foi aprendido na prática. Tentar pelo prompt falhou duas vezes: com o bloco do histórico junto, que manda não trazer dado de fala antiga, o `gpt-oss-20b` devolvia `remarcacao: false` mesmo com a pergunta explícita no prompt. Reconhecer "sim" depois de uma pergunta é casamento de padrão curto, não julgamento.
+
+A negativa vem primeiro no `confirma_remarcacao()`: "não, é outro exame" contém "outro" e não pode ser lido como confirmação.
+
+Para a confirmação ter o que aplicar, a extração rejeitada fica guardada em `pendente` (`app/graph/estado.py`). Sem isso, "sim, foi remarcado" não teria efeito — a data nova já teria sido descartada no turno do conflito. Foi exatamente o bug observado no primeiro teste.
+
+### Limpeza: o que fica gravado
+
+O checkpointer grava um checkpoint **por passo do grafo**, não por mensagem. Medido: 5 mensagens no mesmo grupo geraram 44 checkpoints e 663 KB. E o estado inclui o campo `mensagem` — ou seja, sem limpeza o texto cru da conversa, o nome da pessoa idosa e a especialidade médica ficam em disco, junto com todas as tentativas reprovadas pelos guardrails.
+
+Duas medidas, nos dois momentos:
+
+| Quando | O quê | Onde |
+| --- | --- | --- |
+| Fim de **toda** execução | nó `limpar` guarda a troca no histórico e zera `mensagem`, `extracao_bruta` e `resposta_bruta` | `app/graph/nos.py:366` |
+| Compromisso **encerrado** | `memoria.delete_thread(thread)` apaga checkpoints e writes daquele grupo | `app/graph/grafo.py`, no fim de `processar()` |
+
+Nota de honestidade: desde que o histórico entrou, **o texto das últimas 12 falas fica gravado**. O `limpar` zera o campo `mensagem` da execução atual, mas a mesma fala já foi copiada para o histórico. O que a limpeza garante hoje é o teto — 12 falas, não a conversa inteira — e o apagamento total quando o compromisso encerra.
+
+O `limpar` preserva `resposta` e `extracao` de propósito: o `processar()` lê os dois **depois** do `invoke`, para o retorno e para o log da rota. E preserva `compromisso` e `encerrado`, que são o que a próxima mensagem precisa.
+
+Apagar o thread encerrado não muda comportamento nenhum: com `encerrado = True` o `fundir` já partia do zero, então aquele thread nunca mais seria lido. **Mas apaga de vez** — perguntar depois "quando foi a consulta da vó?" não tem resposta. Decisão consciente; o caminho para mudar isso está na §8.
+
+O `delete_thread` roda em `try/except`: falha de limpeza não pode derrubar uma resposta já pronta. O log registra só o tipo do erro, nunca o conteúdo.
+
+**Ressalva honesta:** apagar linhas no SQLite libera as páginas, mas não encolhe o arquivo — os bytes antigos continuam lá até um `VACUUM` reescrever o banco. Nenhuma consulta os devolve, mas quem abrir o arquivo com um editor binário pode encontrá-los. Para o protótipo, com dados fictícios, está bem; antes de dados reais, o `VACUUM` precisa entrar numa rotina.
+
+```bash
+./.venv/Scripts/python.exe -c "import sqlite3; sqlite3.connect('dados/conversas.sqlite', isolation_level=None).execute('vacuum')"
+```
+
+### `RETER_HISTORICO=1`
+
+Desliga as duas medidas. Com ela, o banco guarda cada passo de cada execução e nada é apagado — serve para inspecionar o grafo rodando, que é o requisito de explicabilidade do `CLAUDE.md` §9.
+
+```bash
+RETER_HISTORICO=1 ./.venv/Scripts/python.exe -m uvicorn app.main:app --reload --port 8000
+```
+
+**Só em desenvolvimento, com dados fictícios.** Ligada, o texto cru das conversas volta a ficar gravado.
+
+### Contexto para o Agente 1
+
+Quando há compromisso em aberto, ele vai no prompt do Agente 1 (`CONTEXTO_EM_ABERTO`, `app/graph/prompts.py:100`). Sem isso o agente lê cada mensagem isolada e "a maysa a acompanhará" vira `conversa` — sozinha, a frase não fala de saúde nenhuma.
 
 ---
 
 ## 2. Agente 1 — Intérprete de Compromissos
 
-Definido em `criar_interprete()` (`app/agents/interprete.py:12`), tarefa em `tarefa_interpretar()` (`app/crews/crew.py:41`).
+Persona em `app/agents/interprete.py`, instruções em `PROMPT_INTERPRETAR` (`app/graph/prompts.py:17`), execução no nó `interpretar()` (`app/graph/nos.py:83`).
 
 - **Entrada:** o texto cru da mensagem + a data de hoje
 - **Trabalho:** ler e separar o que foi dito do que só parece provável
@@ -86,7 +278,7 @@ Definido em `criar_interprete()` (`app/agents/interprete.py:12`), tarefa em `tar
 }
 ```
 
-Repare no `responsavel: null`. A mensagem citou a consulta, mas ninguém se ofereceu pra levar. A regra (4) do prompt (`app/crews/crew.py:55`) diz: _mencionar uma pessoa não é o mesmo que ela ter aceitado_. Campo vazio é corrigível; campo inventado manda a família pro lugar errado.
+Repare no `responsavel: null`. A mensagem citou a consulta, mas ninguém se ofereceu pra levar. A regra (4) do prompt (`app/graph/prompts.py:28`) diz: _mencionar uma pessoa não é o mesmo que ela ter aceitado_. Campo vazio é corrigível; campo inventado manda a família pro lugar errado.
 
 ### O que conta como compromisso
 
@@ -100,19 +292,22 @@ O campo `classificacao` tem três valores, definidos na regra (5) do prompt:
 
 Só em `cuidado` os demais campos são preenchidos; nos outros dois ficam todos nulos.
 
+É também esse campo que decide o caminho no grafo (`rumo_apos_extracao()`, `app/graph/nos.py:210`). Em `fora_do_escopo` e `conversa` a resposta é um texto fixo de `RESPOSTA_FIXA` (`app/graph/prompts.py:105`) e o Agente 2 nem roda. Na versão em CrewAI isso custava uma chamada de LLM inteira para devolver uma frase que nunca muda.
+
 A separação entre os dois últimos existe para o assistente não responder "nenhum compromisso identificado" a quem acabou de combinar um compromisso — seria errado e confuso — nem se oferecer para organizar agenda de trabalho, que não é o escopo do projeto (`CLAUDE.md` §1 e §11.2).
 
 O valor padrão do campo é `conversa` (`app/compromisso.py:53`). Se a LLM omitir a chave, o sistema não age — a falha cai para o lado de não fazer nada.
 
 ### Guardrail `validar_extracao`
 
-Em `app/compromisso.py:116`. Roda **depois** da LLM e **não é IA** — é código determinístico:
+Em `app/compromisso.py:116`, chamado pelo nó de mesmo nome (`app/graph/nos.py:103`). Roda **depois** da LLM e **não é IA** — é código determinístico:
 
 1. Tenta ler o JSON com `json_repair`, que tolera as falhas comuns de LLM: cerca de markdown, vírgula sobrando, aspas trocadas.
 2. Valida contra o modelo Pydantic `Compromisso` (`app/compromisso.py:39`).
 3. Checa formato e coerência: data `AAAA-MM-DD`, horário `HH:MM`, **e rejeita data no passado**.
-4. Falhou? Devolve `(False, "mensagem de erro")` e o CrewAI **reexecuta o agente** com esse erro no prompt — até 2 vezes (`guardrail_max_retries=2`).
-5. Passou? Devolve o JSON normalizado. É exatamente esse texto que o Agente 2 recebe.
+4. Falhou? Devolve `(False, "mensagem de erro")`, o erro vai para o estado e a aresta condicional **manda o fluxo de volta ao nó `interpretar`** — até `MAX_TENTATIVAS` execuções (`app/graph/estado.py:20`, hoje 3: a primeira mais duas correções). Na reexecução a saída reprovada e o motivo entram na conversa com a LLM (`_conversar()`, `app/graph/nos.py:54`), então o agente vê o próprio erro em vez de tentar de novo no escuro.
+5. Esgotou as tentativas? O fluxo vai para `falha_extracao`, o compromisso fica nulo e o grupo recebe um pedido de reescrita. Melhor do que seguir com um dado que não passou na validação.
+6. Passou? Devolve o JSON normalizado. É exatamente esse texto que o Agente 2 recebe.
 
 É aqui que "quinta-feira" vira `2026-10-29` com segurança: o prompt passa a data de hoje como referência e o guardrail confere que o resultado é uma data real e futura.
 
@@ -120,15 +315,15 @@ Em `app/compromisso.py:116`. Roda **depois** da LLM e **não é IA** — é cód
 
 ## 3. Agente 2 — Coordenador de Cuidados
 
-Definido em `criar_coordenador()` (`app/agents/coordenador.py:11`), tarefa em `tarefa_coordenar()` (`app/crews/crew.py:86`).
+Persona em `app/agents/coordenador.py`, instruções em `PROMPT_COORDENAR` (`app/graph/prompts.py:60`), execução no nó `coordenar()` (`app/graph/nos.py:128`).
 
-- **Entrada:** a saída do Agente 1 — o JSON, via `context=[anterior]` (`app/crews/crew.py:133`)
+Ele só roda quando `classificacao` é `cuidado`. Nos outros dois casos o grafo desvia para `resposta_fixa` e ele nem é chamado.
+
+- **Entrada:** a saída do Agente 1 — o JSON, lido do campo `compromisso` do estado
 - **Trabalho:** resumir o que foi entendido e perguntar o que falta
 - **Saída:** um texto curto, até 4 frases, em português
 
 O output do Agente 1 é o input do Agente 2. Ele **não vê a mensagem original** — só os dados já extraídos e validados. Isso é de propósito: assim ele não pode "reinterpretar" e reintroduzir um detalhe que o Agente 1 descartou.
-
-Por isso o motivo da recusa viaja dentro do JSON, no campo `classificacao`: é a única via pela qual o Agente 2 fica sabendo se foi conversa cotidiana ou compromisso fora do escopo.
 
 ```text
 O compromisso e uma consulta de cardiologia para Dona Helena,
@@ -146,7 +341,7 @@ Três obrigações:
 
 ### Guardrail `validar_resposta`
 
-Em `app/compromisso.py:163`. Passa um regex procurando "agendei", "marquei", "registrei", "cadastrei", "coloquei na agenda". Achou? Rejeita e manda reescrever.
+Em `app/compromisso.py:163`, chamado pelo nó de mesmo nome (`app/graph/nos.py:153`). Passa um regex procurando "agendei", "marquei", "registrei", "cadastrei", "coloquei na agenda". Achou? Rejeita, e a aresta condicional manda o fluxo de volta ao nó `coordenar` com o motivo — mesmo mecanismo do guardrail do Agente 1, mesmo limite de tentativas.
 
 Existe porque **nada é gravado em agenda nenhuma ainda**. Sem esse guardrail, a LLM diria "pronto, agendei!" — e a família confiaria num evento que não existe. Ver `CLAUDE.md` §4: _nunca informar que agendou se a API de calendário não confirmar a criação_.
 
@@ -158,7 +353,7 @@ Os dois agentes compartilham este arquivo. Ele não chama LLM nenhuma: é Python
 
 A divisão de responsabilidade entre os dois arquivos é a ideia central do projeto:
 
-> O prompt, em `crew.py`, **pede** para o agente não adivinhar. O `compromisso.py` **verifica** que ele não adivinhou.
+> O prompt, em `graph/prompts.py`, **pede** para o agente não adivinhar. O `compromisso.py` **verifica** que ele não adivinhou.
 
 Pedido é sugestão — um prompt pode ser ignorado por uma LLM num dia ruim. Verificação é garantia.
 
@@ -177,9 +372,9 @@ São os quatro campos sem os quais o compromisso não poderá ser agendado mais 
 | Função | Valida a saída de | Rejeita |
 | --- | --- | --- |
 | `validar_extracao` (`:116`) | Agente 1 | JSON malformado, campo inválido, data fora do formato, **data no passado** |
-| `validar_resposta` (`:163`) | Agente 2 | texto que afirme ter agendado, marcado ou registrado |
+| `validar_resposta` (`:163`) | Agente 2 | resposta vazia ou curta demais; texto que afirme ter agendado, marcado ou registrado |
 
-Ambos devolvem `(True, saida_normalizada)` ou `(False, "explicação do erro")`. No segundo caso o CrewAI **reexecuta o agente** com a explicação no prompt, até 2 vezes.
+Ambos devolvem `(True, saida_normalizada)` ou `(False, "explicação do erro")`. No segundo caso a aresta condicional **devolve o fluxo ao nó do agente** com a explicação no estado, até o limite de `MAX_TENTATIVAS`.
 
 Exemplo concreto: a LLM interpreta "quinta-feira" como uma data que já passou. O guardrail barra e responde ao agente _"data no passado: 2026-10-22"_. Ele recalcula com essa informação.
 
@@ -192,14 +387,17 @@ Detalhamento de cada um nas seções [§2](#2-agente-1--intérprete-de-compromis
 | `hoje()` | data corrente no fuso de São Paulo — referência para "amanhã", "quinta-feira" |
 | `faltantes()` | quais campos obrigatórios ainda estão vazios; usado por `app/routes/agente.py` |
 | `interpretar_json()` | lê o JSON da LLM tolerando cerca de markdown, vírgula sobrando e aspas trocadas |
+| `data_por_extenso()` | converte `2026-11-11` em "11 de novembro de 2026" para a resposta ao grupo |
 
-### Por que mora fora do `crew.py`
+`data_por_extenso()` existe por causa de um erro observado: a conversão era regra de prompt e a LLM trocava o dia — o compromisso trazia `2026-11-11` e a resposta saía "07 de novembro de 2026". Escrever a data é conversão mecânica, não julgamento; em código o resultado é sempre o mesmo. O prompt do Agente 2 agora só manda copiar o que já vem pronto.
+
+### Por que mora fora do `graph/`
 
 Três razões práticas:
 
 1. **Testável sem LLM.** Dá para verificar toda a lógica de validação sem gastar uma chamada à API nem depender da variação de temperatura do modelo.
-2. **Um lugar só.** As duas tarefas e a rota da API usam as mesmas regras. Duplicar daria divergência.
-3. **Sobrevive à troca de framework.** O arquivo não importa nada do CrewAI. Se o framework de agentes mudar, a parte que impede o sistema de inventar dado atravessa a migração intacta.
+2. **Um lugar só.** Os dois nós de guardrail e a rota da API usam as mesmas regras. Duplicar daria divergência.
+3. **Sobrevive à troca de framework.** O arquivo não importa nada de framework de agentes. Isso deixou de ser teoria: na migração de CrewAI para LangGraph, `compromisso.py` atravessou praticamente intacto — só os docstrings mudaram. Toda a parte que impede o sistema de inventar dado continuou valendo.
 
 ---
 
@@ -212,7 +410,7 @@ Papéis diferentes, falhas diferentes.
 | 1 — Intérprete  | Extrai dado errado, inventa data   | `validar_extracao`: Pydantic + formato + data no passado |
 | 2 — Coordenador | Fala demais, promete o que não fez | `validar_resposta`: regex de afirmação de agendamento    |
 
-Um agente único misturaria as duas responsabilidades num prompt só, e qualquer validação teria que adivinhar qual metade falhou. Separando, cada guardrail sabe exatamente o que está checando e o retry reexecuta só a etapa quebrada.
+Um agente único misturaria as duas responsabilidades num prompt só, e qualquer validação teria que adivinhar qual metade falhou. Separando, cada guardrail sabe exatamente o que está checando e a aresta de retry devolve o fluxo só à etapa quebrada.
 
 Também atende o requisito acadêmico de **dois agentes de IA colaborando** (`CLAUDE.md` §9).
 
@@ -306,12 +504,16 @@ Teste mais curto, só para ver se o bot escuta o grupo: mande `!ping` → respon
 Nada aqui está decidido contra — é escopo não implementado.
 
 - **Gravação na agenda.** Nenhuma API de calendário conectada. O "Agente 2" do `CLAUDE.md` §5 prevê criar eventos; hoje ele só coordena a conversa. O provedor (Google Calendar, Outlook) continua em aberto — `CLAUDE.md` §10.
-- **Memória entre mensagens.** Cada `!agenda` é independente. Se alguém responder "eu levo ela" na mensagem seguinte, o sistema não liga uma coisa na outra. O `CLAUDE.md` §3 passo 3 pede exatamente isso.
+- **Resolver o conflito pela conversa.** Quando a mensagem nova contradiz o combinado, o assistente pergunta se é remarcação ou compromisso novo — mas **não há como responder**. Dizer "é remarcação" na mensagem seguinte gera outra extração, que esbarra no mesmo conflito. Falta um caminho que leia a resposta do grupo e aplique a decisão. É a maior lacuna de hoje.
 
-  A memória nativa do CrewAI (`Crew(memory=...)`) está **bloqueada por conflito de dependência**, não por decisão. Ela chama a LLM com `tools`, e `litellm/main.py:5295` importa o handler MCP sempre que há `tools` na chamada. O `crewai 1.15.28` exige `mcp~=1.28.1`; o `litellm 1.106.2` exige `mcp>=2.2.0`. O `CacheableResult` que o litellm importa só existe no `mcp` 2.x, então a execução quebra com `ImportError` em runtime. Os agentes sozinhos não usam `tools` — por isso só a memória falha. Caminhos possíveis: subir o `mcp` para 2.x e verificar se o CrewAI aguenta, ou esperar uma versão do CrewAI que alinhe a constraint.
+- **Mais de um compromisso aberto por grupo.** O thread guarda um só. Duas consultas em aberto ao mesmo tempo caem no caminho do conflito, uma de cada vez. Suportar vários exige identificador por compromisso, não por grupo — `CLAUDE.md` §4 e §7.7.
 
-  Vale separar duas coisas que costumam ser confundidas: memória do CrewAI é **recuperação semântica** por embedding, não registro de estado. Para evitar duplicidade e aceitar remarcação (`CLAUDE.md` §4 e §7.7) o que falta é um registro de compromissos abertos, com identificador — não lembrança aproximada injetada no prompt.
-- **Detecção de duplicidade, atualização e cancelamento.** `CLAUDE.md` §7 itens 7.
+- **"É outro compromisso" descarta o segundo.** Quando o grupo nega a remarcação — "não, é outro exame" —, o sistema mantém o compromisso antigo e **joga fora o novo, em silêncio**. O certo seria abrir um segundo compromisso, mas o thread guarda um só. Mesma raiz do item abaixo.
+
+- **Consultar compromisso antigo.** Perguntar "quando é a consulta da vó?" cai como `conversa` — não existe intenção de consulta no grafo. E o dado já não está lá: o compromisso encerrado é apagado com o thread. Para isso funcionar falta um **registro de compromissos com identificador**, separado do estado de conversa do checkpointer, gravado antes do `delete_thread`. Decisão adiada conscientemente.
+
+- **Expurgo de conversa abandonada.** Grupo que começa um compromisso e nunca termina mantém o thread para sempre — o `delete_thread` só roda quando encerra. Varrer por idade exigiria listar threads por data, que o `SqliteSaver` não expõe.
+- **Atualização e cancelamento.** Remarcação é detectada (vira conflito) mas não aplicada; cancelamento não é reconhecido. `CLAUDE.md` §7 item 7.
 - **Rede neural.** O requisito `CLAUDE.md` §9 pede uma. Hoje a classificação "é compromisso ou não" é feita pela LLM, no campo `classificacao` — não por um modelo treinado pela equipe.
 - **Autorização.** Não há checagem de quem pode acionar o comando, nem de permissão de acesso à agenda de alguém. `CLAUDE.md` §6 e §11.7.
 - **Base de conhecimento e MLOps.** Requisitos `CLAUDE.md` §9, ainda não iniciados.
@@ -320,53 +522,59 @@ Nada aqui está decidido contra — é escopo não implementado.
 
 ## 9. Dependências externas
 
-- **LLM:** `groq/openai/gpt-oss-20b`, via Groq. Chave em `.env` (`GROQ_API_KEY`), carregada por `load_dotenv()`.
-- **`max_tokens=2000`** (`app/crews/crew.py:34`) não é folga: o `gpt-oss-20b` é modelo de raciocínio e gasta parte dos tokens no raciocínio interno. Com limite curto não sobra nada para a resposta e o CrewAI recebe texto vazio.
-- **CrewAI 1.15.28**, **Baileys 7.0.0-rc14** (WhatsApp), **FastAPI/uvicorn**.
-- O parse do JSON fica em `compromisso.py`, não no `instructor` do CrewAI: a versão do `instructor` deste ambiente é incompatível com o `mcp~=1.28.1` que o CrewAI exige.
+- **LLM:** `openai/gpt-oss-20b`, via Groq, pelo `langchain-groq`. Chave em `.env` (`GROQ_API_KEY`), carregada por `load_dotenv()`. O modelo pode ser trocado por `GROQ_MODEL` no ambiente.
+- **`max_tokens=2000`** (`app/graph/nos.py:46`) não é folga: o `gpt-oss-20b` é modelo de raciocínio e gasta parte dos tokens no raciocínio interno. Com limite curto não sobra nada para a resposta e o conteúdo chega vazio.
+- **`reasoning_format="hidden"`** no mesmo lugar. Sem isso o raciocínio do modelo vem junto no campo de conteúdo, o JSON do Agente 1 chega misturado a texto solto e o guardrail reprova uma saída que estava correta.
+- **LangGraph 1.2.20**, **langchain-groq 1.1.3**, **Baileys 7.0.0-rc14** (WhatsApp), **FastAPI/uvicorn**.
+- O parse do JSON fica em `compromisso.py`, e não numa saída estruturada do framework: ele é a fronteira entre a LLM e o resto do sistema, e precisa valer igual qualquer que seja o framework por baixo.
 
 ---
 
-## 10. Documentação do CrewAI
+## 10. Documentação do LangGraph
 
-Versão em uso: **crewai 1.15.28**. Os links abaixo apontam para a doc corrente. Para fixar uma versão, troque o número na URL: `docs.crewai.com/v1.15.28/en/...`.
+Versão em uso: **langgraph 1.2.20**.
 
 ### Estrutura e sintaxe
 
-| Página                                                                              | O que cobre                                                                                                 |
-| ----------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
-| [Crews](https://docs.crewai.com/en/concepts/crews)                                  | `@CrewBase`, `@agent`, `@task`, `@crew` e o layout `config/agents.yaml` + `config/tasks.yaml`               |
-| [Using annotations](https://docs.crewai.com/v1.15.24/en/learn/using-annotations.md) | exemplo completo da classe decorada                                                                         |
-| [Agents](https://docs.crewai.com/en/concepts/agents)                                | `role`, `goal`, `backstory`, `max_iter`, `allow_delegation`                                                 |
-| [Tasks](https://docs.crewai.com/en/concepts/tasks)                                  | `description`, `expected_output`, `context` e **`guardrail`** — guardrail não tem página própria, mora aqui |
+| Página | O que cobre |
+| --- | --- |
+| [Graph API — control flow](https://docs.langchain.com/oss/python/langgraph/graph-api-control-flow) | sequências, ramificações, **arestas condicionais** e ciclos — a base do que está em `grafo.py` |
+| [`StateGraph.add_conditional_edges`](https://reference.langchain.com/python/langgraph/graph/state/StateGraph/add_conditional_edges) | assinatura exata do método que faz o roteamento e o retry |
+| [Send e Command](https://docs.langchain.com/oss/python/langgraph/graph-api-send-command) | retornar a rota de dentro do nó, em vez de uma função de aresta separada |
 
-### Processos
+### Persistência — o caminho da memória entre mensagens
 
-| Página                                                                | O que cobre                                              |
-| --------------------------------------------------------------------- | -------------------------------------------------------- |
-| [Processes](https://docs.crewai.com/en/concepts/processes)            | sequencial vs hierárquico                                |
-| [Sequential](https://docs.crewai.com/en/learn/sequential-process)     | o processo usado hoje em `montar_crew()`                 |
-| [Hierarchical](https://docs.crewai.com/en/learn/hierarchical-process) | manager delegando; vira opção real a partir de 3 agentes |
+| Página | O que cobre |
+| --- | --- |
+| [Persistence](https://docs.langchain.com/oss/python/langgraph/persistence) | checkpointer, `thread_id` e retomada de conversa |
+| [Checkpointers](https://docs.langchain.com/oss/python/integrations/checkpointers) | os backends disponíveis — memória, SQLite, Postgres, Mongo, Redis |
 
-### Ferramentas — quando o coordenador ganhar o calendário
-
-| Página                                                                           | O que cobre                                             |
-| -------------------------------------------------------------------------------- | ------------------------------------------------------- |
-| [Tools](https://docs.crewai.com/en/concepts/tools)                               | conceito de ferramenta                                  |
-| [Criar ferramenta própria](https://docs.crewai.com/en/learn/create-custom-tools) | caminho para a API de agenda prevista no `CLAUDE.md` §5 |
-
-### Referência
-
-| Página                                              | O que cobre                                    |
-| --------------------------------------------------- | ---------------------------------------------- |
-| [CLI](https://docs.crewai.com/en/concepts/cli)      | `crewai create crew`, que gera o scaffold YAML |
-| [LLMs](https://docs.crewai.com/en/concepts/llms)    | configuração do provedor — aqui, Groq          |
-| [Índice completo](https://docs.crewai.com/llms.txt) | todas as páginas em texto puro                 |
+**Armadilha verificada:** o `SqliteSaver` **não implementa** `prune()`, `delete_for_runs()` nem `copy_thread()` — os três existem na classe base e levantam `NotImplementedError`. O único método de limpeza que funciona é `delete_thread(thread_id)`. Vale conferir antes de planejar em cima de qualquer um deles.
 
 ### Por onde começar
 
-[Crews](https://docs.crewai.com/en/concepts/crews) e [Tasks](https://docs.crewai.com/en/concepts/tasks). A primeira mostra o formato YAML; a segunda cobre `context` e `guardrail` — as duas peças que fazem os agentes colaborarem sem inventar dado.
+[Graph API — control flow](https://docs.langchain.com/oss/python/langgraph/graph-api-control-flow). É a página que explica as duas peças centrais daqui: a aresta condicional que roteia por `classificacao` e o ciclo que devolve o fluxo ao agente quando o guardrail reprova.
 
 ### Decisão em aberto
 
-Hoje agentes e tarefas estão em Python, em `app/agents/` e `app/crews/crew.py`, e não em YAML. As duas formas são equivalentes para o framework: o YAML é convenção da CLI, não exigência. Migrar passa a valer se entrar um terceiro agente, se a equipe for iterar prompts em conjunto, ou se a estrutura padrão do CrewAI for critério de avaliação. Decisão pendente —
+O checkpointer é o `SqliteSaver`, com o banco em `dados/conversas.sqlite` (`app/graph/grafo.py:97`). Serve ao protótipo, mas é arquivo local: não sobrevive a deploy em mais de um processo nem tem replicação. Se o projeto sair da máquina de desenvolvimento, a escolha entre Postgres e outro backend volta à mesa — e junto com ela a retenção dos dados de saúde (`CLAUDE.md` §8). Decisão pendente.
+
+---
+
+## 11. Histórico de migração
+
+O projeto nasceu em **CrewAI 1.15.28** e migrou para **LangGraph 1.2.20**. O que mudou e o que não mudou:
+
+| Antes (CrewAI) | Depois (LangGraph) |
+| --- | --- |
+| `Crew(process=sequential)` com duas `Task` | grafo com nós e arestas condicionais |
+| `Task(context=[anterior])` | campo `compromisso` no `EstadoGrupo` |
+| `guardrail=` + `guardrail_max_retries=2` | nó de validação + aresta que volta ao agente, limitada por `MAX_TENTATIVAS` |
+| Agente 2 respondia até quando não era cuidado | nó `resposta_fixa`, sem LLM |
+| `montar_crew()` a cada pedido | grafo compilado uma vez, estado por `invoke` |
+| `LLM` do CrewAI, via litellm | `ChatGroq`, direto |
+| Memória bloqueada por conflito `mcp` | conflito eliminado; falta decidir o checkpointer |
+
+`app/compromisso.py` atravessou a migração praticamente intacto — só os docstrings mudaram. Era o objetivo declarado na §4: a parte que impede o sistema de inventar dado não depende de framework.
+
+Dois parâmetros do CrewAI não têm equivalente e foram descartados: `max_rpm` (controle de taxa, que passa a ser responsabilidade do cliente HTTP ou do Groq) e `max_iter` (número de passos internos do agente, que no grafo é explícito nas arestas).
