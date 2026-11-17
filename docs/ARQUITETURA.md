@@ -16,12 +16,14 @@ challenge-2/
 │   ├── routes/agente.py     # POST /agente e GET /saude
 │   ├── agents/
 │   │   ├── interprete.py    # agente 1 — quem ele é
-│   │   └── coordenador.py   # agente 2 — quem ele é
+│   │   ├── coordenador.py   # agente 2 — quem ele é
+│   │   └── RAG.py           # agente 3 — quem ele é, mais a tool e o índice
 │   └── graph/
 │       ├── estado.py        # o estado que atravessa o grafo
 │       ├── prompts.py       # o que se pede a cada agente
 │       ├── nos.py           # os nós e as arestas condicionais
 │       └── grafo.py         # monta o grafo e expõe processar()
+├── arquivos/                # o PDF do Guia do Cuidador
 ├── docs/                    # este arquivo
 ├── whatsapp-bot/bot.js      # o bot
 ├── CLAUDE.md
@@ -101,13 +103,14 @@ bot.js envia o texto da "resposta" no grupo
 
 ### O Roteador: a entrada é o comando
 
-O grafo tem três portas de entrada, escolhidas por `rumo_inicial()` (`app/graph/nos.py`) a partir do comando que a pessoa usou no grupo:
+O grafo tem quatro portas de entrada, escolhidas por `rumo_inicial()` (`app/graph/nos.py`) a partir do comando que a pessoa usou no grupo:
 
 | Comando | Entra em | Chama LLM? |
 | --- | --- | --- |
-| `!agenda <texto>` | `interpretar` — os dois agentes | sim |
+| `!agenda <texto>` | `interpretar` — agentes 1 e 2 | sim |
 | `!compromisso` | `responder_compromisso` | **não** |
 | `!andamento <pergunta>` | `responder_andamento` | sim, uma vez |
+| `!duvida <pergunta>` | `responder_duvida` — agente 3 | sim, duas ou mais |
 
 Este é o **Roteador** do desenho original no LangGraph Builder, mas determinístico: quem escolhe o comando já declarou a intenção, então não há o que uma LLM precise classificar na entrada. Mais barato e sem chance de errar.
 
@@ -129,6 +132,36 @@ O guardrail é o `validar_andamento()` (`app/compromisso.py`), que soma ao `vali
 | compromisso **sem horário** e a resposta cita `15h` ou `15:00` | reprova, idem |
 
 Sem isso, "quando é a consulta?" com data nula é um convite ao chute — e um evento com data inventada é o não-sucesso explícito do `CLAUDE.md` §7.
+
+### `!duvida` — o Agente 3 e o Guia do Cuidador
+
+`!andamento` pergunta sobre o que o grupo combinou. `!duvida` pergunta sobre cuidado — "como prevenir quedas em casa?" — e quem responde é o Agente 3, a partir do **Guia do Cuidador** (`arquivos/`, 250 páginas). É a base de conhecimento do `CLAUDE.md` §9.
+
+Ele é o único agente com ferramenta. O `RAG.py` divide o PDF em trechos de 1000 caracteres, indexa cada um com o modelo `intfloat/multilingual-e5-base` e expõe a busca como a tool `pega_contexto`. **Quem decide chamar a tool é a LLM**, não o grafo:
+
+```text
+pergunta → LLM decide buscar → tool devolve 4 trechos com [Pagina N]
+         → LLM responde citando a página → guardrail confere
+```
+
+O índice fica em memória e é montado quando a API sobe (`app/main.py`), não na primeira pergunta: o modelo tem ~1 GB e indexar o PDF leva minutos. Falhar aí não derruba a API — só o `!duvida` para.
+
+O compromisso do grupo **não** entra neste prompt. A pergunta é sobre cuidado, não sobre o combinado, e assim nenhum dado de saúde da pessoa idosa vai para esta conversa (`CLAUDE.md` §8).
+
+#### Guardrail `validar_orientacao`
+
+Os outros guardrails pegam dado de compromisso inventado. Este pega saúde inventada:
+
+| Situação | Resultado |
+| --- | --- |
+| resposta vazia ou com menos de 15 caracteres | reprova |
+| cita dose — `500mg`, `2 comprimidos`, `10 gotas` | reprova |
+| manda dar, tomar ou alterar medicamento | reprova |
+| não cita página **e** não diz "não sei" | reprova |
+
+A última linha é a principal. O agente decide se consulta o Guia — isso é julgamento da LLM. A aprovação não é: ou a resposta mostra de onde saiu, ou admite que não sabe. Terceira opção é invenção, e é o `CLAUDE.md` §5 na prática.
+
+`tome banho sentada` — que está no Guia — passa: a regra de prescrição exige objeto de medicamento.
 
 ---
 
@@ -516,7 +549,9 @@ Nada aqui está decidido contra — é escopo não implementado.
 - **Atualização e cancelamento.** Remarcação é detectada (vira conflito) mas não aplicada; cancelamento não é reconhecido. `CLAUDE.md` §7 item 7.
 - **Rede neural.** O requisito `CLAUDE.md` §9 pede uma. Hoje a classificação "é compromisso ou não" é feita pela LLM, no campo `classificacao` — não por um modelo treinado pela equipe.
 - **Autorização.** Não há checagem de quem pode acionar o comando, nem de permissão de acesso à agenda de alguém. `CLAUDE.md` §6 e §11.7.
-- **Base de conhecimento e MLOps.** Requisitos `CLAUDE.md` §9, ainda não iniciados.
+- **MLOps.** Requisito `CLAUDE.md` §9, ainda não iniciado. A base de conhecimento, do mesmo item, existe desde o Agente 3.
+- **Índice do Guia persistido.** É remontado a cada vez que a API sobe. Salvar em disco cortaria o tempo de startup, mas exige versionar o índice ou gerá-lo num passo à parte.
+- **Sair da `langchain-community`.** O Agente 3 a usa só pelo `PyPDFLoader`, e a própria LangChain está descontinuando o pacote. Trocar por `pypdf` direto são ~10 linhas.
 
 ---
 
@@ -525,6 +560,7 @@ Nada aqui está decidido contra — é escopo não implementado.
 - **LLM:** `openai/gpt-oss-20b`, via Groq, pelo `langchain-groq`. Chave em `.env` (`GROQ_API_KEY`), carregada por `load_dotenv()`. O modelo pode ser trocado por `GROQ_MODEL` no ambiente.
 - **`max_tokens=2000`** (`app/graph/nos.py:46`) não é folga: o `gpt-oss-20b` é modelo de raciocínio e gasta parte dos tokens no raciocínio interno. Com limite curto não sobra nada para a resposta e o conteúdo chega vazio.
 - **`reasoning_format="hidden"`** no mesmo lugar. Sem isso o raciocínio do modelo vem junto no campo de conteúdo, o JSON do Agente 1 chega misturado a texto solto e o guardrail reprova uma saída que estava correta.
+- **Embeddings:** `intfloat/multilingual-e5-base`, pelo `sentence-transformers`, rodando **local**. Nenhuma pergunta do grupo sai da máquina para ser indexada. São ~1 GB entre modelo e `torch`, baixados do HuggingFace na primeira execução.
 - **LangGraph 1.2.20**, **langchain-groq 1.1.3**, **Baileys 7.0.0-rc14** (WhatsApp), **FastAPI/uvicorn**.
 - O parse do JSON fica em `compromisso.py`, e não numa saída estruturada do framework: ele é a fronteira entre a LLM e o resto do sistema, e precisa valer igual qualquer que seja o framework por baixo.
 

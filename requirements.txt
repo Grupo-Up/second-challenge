@@ -1,0 +1,39 @@
+# Instalar com:
+#     .venv/Scripts/python.exe -m pip install -r requirements.txt
+#
+# Versoes testadas, com >=. Pins exatos herdados de outra arvore de
+# dependencias foi o que quebrou a branch anterior.
+
+# O torch sai do indice de CPU; sem esta linha o pip baixa a build CUDA.
+--extra-index-url https://download.pytorch.org/whl/cpu
+
+# --- API ---
+fastapi>=0.161.0
+uvicorn>=0.54.0
+pydantic>=2.12.5
+python-dotenv>=1.2.4
+
+# --- agentes e grafo ---
+langgraph>=1.2.20
+langgraph-checkpoint-sqlite>=3.1.3
+langchain>=1.4.9
+langchain-core>=1.7.6
+langchain-groq>=1.1.3
+
+# Tolera JSON malformado da LLM no guardrail do agente 1.
+json-repair>=0.59.0
+
+# --- base de conhecimento do agente 3 ---
+# A langchain-community entra so pelo PyPDFLoader e esta sendo
+# descontinuada: trocar por pypdf direto e divida tecnica em aberto.
+langchain-community>=0.4.2
+langchain-huggingface>=1.2.3
+langchain-text-splitters>=1.1.3
+
+# Embeddings rodam local: nenhuma pergunta do grupo sai da maquina.
+sentence-transformers>=6.3.0
+torch>=2.15.0
+
+pypdf>=7.1.0
+# Sem fonttools o pypdf nao le a codificacao de algumas fontes do Guia.
+fonttools>=4.56.0

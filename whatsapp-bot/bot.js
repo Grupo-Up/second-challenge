@@ -14,6 +14,7 @@ const COMANDOS = {
   '!agenda': 'agenda',
   '!compromisso': 'compromisso',
   '!andamento': 'andamento',
+  '!duvida': 'duvida',
 };
 
 // Comandos que o proprio bot responde, sem chamar a API
@@ -25,9 +26,14 @@ const AJUDA =
   '!compromisso - mostra o que ja esta combinado e o que ainda falta.\n\n' +
   '!andamento <pergunta> - pergunta sobre o compromisso em aberto.\n' +
   'Exemplo: !andamento quem vai levar a vo?\n\n' +
+  '!duvida <pergunta> - pergunta sobre o cuidado da pessoa idosa, ' +
+  'respondida a partir do Guia do Cuidador.\n' +
+  'Exemplo: !duvida como prevenir quedas em casa?\n\n' +
   '!ajuda - mostra esta lista.\n\n' +
   'Nada e gravado em agenda nesta etapa: o assistente apenas organiza ' +
-  'a informacao e confirma com o grupo.';
+  'a informacao e confirma com o grupo.\n\n' +
+  'As respostas do !duvida vem do Guia do Cuidador e nao substituem a ' +
+  'avaliacao de um profissional de saude.';
 
 // Tira acento para variantes acentuadas do comando valerem igual
 function semAcento(texto) {
@@ -206,13 +212,19 @@ async function iniciarBot() {
         continue;
       }
 
-      // !compromisso nao leva texto; os outros dois precisam
+      // !compromisso nao leva texto; os outros precisam
       if (!pedido && comando !== '!compromisso') {
+        const SEM_TEXTO = {
+          '!andamento':
+            'Escreva a pergunta depois do comando. Exemplo: !andamento quem vai levar a vo?',
+          '!duvida':
+            'Escreva a pergunta depois do comando. Exemplo: !duvida como prevenir quedas em casa?',
+        };
+
         await bot.sendMessage(grupo, {
           text:
-            comando === '!andamento'
-              ? 'Escreva a pergunta depois do comando. Exemplo: !andamento quem vai levar a vo?'
-              : 'Escreva a informacao depois do comando. Exemplo: !agenda a vo Helena tem consulta no cardiologista quinta-feira as 15h.',
+            SEM_TEXTO[comando] ??
+            'Escreva a informacao depois do comando. Exemplo: !agenda a vo Helena tem consulta no cardiologista quinta-feira as 15h.',
         });
         continue;
       }

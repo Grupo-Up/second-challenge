@@ -201,6 +201,23 @@ RESPOSTA_FALHA_ANDAMENTO = (
 )
 
 
+# ---------------------------------------------------------------------------
+# Comando !duvida: so as respostas fixas. O pedido ao agente 3 vive no
+# SYSTEM_PROMPT dele, em `app/agents/RAG.py`, junto da tool.
+
+RESPOSTA_SEM_PERGUNTA = (
+    "Escreva a pergunta depois do comando. Exemplo: !duvida como prevenir "
+    "quedas em casa?"
+)
+
+# Tentativas esgotadas ou falha ao consultar o Guia. Assume a falha em vez
+# de arriscar orientacao de saude sem fonte.
+RESPOSTA_FALHA_GUIA = (
+    "Nao foi possivel responder a partir do Guia do Cuidador agora. Para "
+    "duvidas sobre a saude da pessoa idosa, procure um profissional."
+)
+
+
 # Respostas que nao passam por LLM
 # ---------------------------------------------------------------------------
 

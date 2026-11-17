@@ -282,6 +282,73 @@ def resumir(compromisso):
     return "\n".join(linhas)
 
 
+# Resposta sem pagina citada veio da memoria do modelo, nao do Guia.
+CITA_PAGINA = re.compile(r"p[aá]g(?:ina)?s?\.?\s*\d+", re.IGNORECASE)
+ADMITE_NAO_SABER = re.compile(r"n[aã]o sei", re.IGNORECASE)
+
+# "ml" e "g" ficam de fora: aparecem em hidratacao e alimentacao no Guia.
+INDICA_DOSE = re.compile(
+    r"\b\d+[\d.,]*\s*(mg|mcg|comprimidos?|c[aá]psulas?|ampolas?|gotas?)\b",
+    re.IGNORECASE,
+)
+
+# O objeto e obrigatorio, senao "tome banho sentada" seria barrado.
+PRESCREVE = re.compile(
+    r"\b(tome|tomar|d[eê]|dar|administre|administrar|aumente|diminua|suspenda)\s+"
+    r"(?:\w+\s+){0,3}"
+    r"(rem[eé]dios?|medicamentos?|dose|dosagem|comprimidos?|c[aá]psulas?)\b",
+    re.IGNORECASE,
+)
+
+
+def validar_orientacao(saida):
+    """Guardrail do agente 3. Sem LLM.
+
+    Os outros guardrails pegam dado de compromisso inventado; este pega
+    saude inventada. O agente decide se consulta o Guia, mas a resposta so
+    passa se citar a pagina ou admitir que nao sabe (CLAUDE.md, secao 5).
+    """
+    texto = str(saida).strip()
+
+    if len(texto) < 15:
+        return (
+            False,
+            "A resposta veio vazia ou curta demais. Responda a pergunta com "
+            "base nos trechos do Guia do Cuidador, citando a pagina.",
+        )
+
+    dose = sorted(set(m.group(0).lower() for m in INDICA_DOSE.finditer(texto)))
+
+    if dose:
+        return (
+            False,
+            "A resposta indica dose ou quantidade de medicamento "
+            "(" + ", ".join(dose) + "). "
+            "Este assistente nao orienta medicacao. Reescreva sem dose e "
+            "oriente a procurar um profissional de saude.",
+        )
+
+    if PRESCREVE.search(texto):
+        return (
+            False,
+            "A resposta diz para dar, tomar ou alterar medicamento. Este "
+            "assistente nao orienta medicacao. Reescreva orientando a "
+            "procurar um profissional de saude.",
+        )
+
+    if not CITA_PAGINA.search(texto) and not ADMITE_NAO_SABER.search(texto):
+        return (
+            False,
+            "A resposta nao cita a pagina de onde a informacao veio. Use a "
+            "ferramenta de busca no Guia do Cuidador, responda apenas com o "
+            "que estiver nos trechos e cite a pagina. Se os trechos nao "
+            "responderem, escreva: Nao sei. Essa informacao nao esta no "
+            "material disponivel.",
+        )
+
+    return (True, texto)
+
+
 def validar_andamento(saida, compromisso):
     """Guardrail da resposta a uma pergunta do grupo.
 

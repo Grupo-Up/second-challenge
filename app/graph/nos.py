@@ -22,7 +22,7 @@ import os
 from dotenv import load_dotenv
 from langchain_groq import ChatGroq
 
-from app.agents import coordenador, interprete
+from app.agents import RAG, coordenador, interprete
 from app.compromisso import (
     confirma_remarcacao,
     data_por_extenso,
@@ -32,6 +32,7 @@ from app.compromisso import (
     resumir,
     validar_andamento as checar_andamento,
     validar_extracao as checar_extracao,
+    validar_orientacao as checar_orientacao,
     validar_resposta as checar_resposta,
 )
 from app.graph import prompts
@@ -417,6 +418,71 @@ def falha_andamento(_estado: EstadoGrupo) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Agente 3 e seu guardrail
+# ---------------------------------------------------------------------------
+
+
+def responder_duvida(estado: EstadoGrupo) -> dict:
+    """Comando !duvida: o agente 3 responde pelo Guia do Cuidador.
+
+    Unico agente com ferramenta: ele mesmo decide buscar no Guia antes de
+    responder. Busca, indice e instrucoes em `app/agents/RAG.py`.
+
+    O compromisso do grupo nao entra aqui de proposito. A pergunta e sobre
+    cuidado, nao sobre o combinado - para isso existe o !andamento -, e
+    assim nenhum dado de saude vai parar neste prompt (CLAUDE.md, secao 8).
+    """
+    pergunta = (estado.get("mensagem") or "").strip()
+
+    if not pergunta:
+        return {"resposta": prompts.RESPOSTA_SEM_PERGUNTA}
+
+    # O agente e criado do zero a cada chamada: sem o motivo da reprovacao
+    # junto, a reexecucao repetiria o mesmo erro no escuro.
+    erro = estado.get("erro_resposta")
+
+    if erro:
+        pergunta = f"{pergunta}\n\n{prompts.PROMPT_CORRIGIR.format(erro=erro)}"
+
+    try:
+        texto = RAG.pergunta_ao_agente(pergunta)
+    except Exception as falha:
+        # Loga o tipo do erro, nunca a pergunta: ela e conteudo do grupo.
+        print("falha ao consultar o Guia:", type(falha).__name__, flush=True)
+        return {"resposta": prompts.RESPOSTA_FALHA_GUIA}
+
+    return {
+        "resposta_bruta": texto,
+        "tentativas_resposta": estado.get("tentativas_resposta", 0) + 1,
+    }
+
+
+def validar_duvida(estado: EstadoGrupo) -> dict:
+    """Guardrail do agente 3. Codigo deterministico, sem LLM.
+
+    O agente decide consultar o Guia; este codigo decide se a resposta
+    chega ao grupo. Sem pagina citada e sem admitir que nao sabe, nao
+    chega - e nenhuma resposta pode indicar medicacao.
+    """
+    # Pergunta vazia ou consulta falhada ja respondem sem LLM: nesses
+    # casos nao ha nada bruto para validar.
+    if not estado.get("resposta_bruta"):
+        return {"erro_resposta": None}
+
+    aprovado, saida = checar_orientacao(estado["resposta_bruta"])
+
+    if not aprovado:
+        return {"erro_resposta": saida, "resposta": None}
+
+    return {"erro_resposta": None, "resposta": saida}
+
+
+def falha_duvida(_estado: EstadoGrupo) -> dict:
+    """O agente 3 nao produziu resposta aprovada dentro do limite."""
+    return {"resposta": prompts.RESPOSTA_FALHA_GUIA}
+
+
+# ---------------------------------------------------------------------------
 # Nos deterministicos de saida
 # ---------------------------------------------------------------------------
 
@@ -530,6 +596,9 @@ def rumo_inicial(estado: EstadoGrupo) -> str:
     if comando == "andamento":
         return "responder_andamento"
 
+    if comando == "duvida":
+        return "responder_duvida"
+
     return "interpretar"
 
 
@@ -539,6 +608,16 @@ def rumo_apos_andamento(estado: EstadoGrupo) -> str:
         if estado.get("tentativas_resposta", 0) < MAX_TENTATIVAS:
             return "responder_andamento"
         return "falha_andamento"
+
+    return "limpar"
+
+
+def rumo_apos_duvida(estado: EstadoGrupo) -> str:
+    """Para onde ir depois de validar a resposta do agente 3."""
+    if estado.get("erro_resposta"):
+        if estado.get("tentativas_resposta", 0) < MAX_TENTATIVAS:
+            return "responder_duvida"
+        return "falha_duvida"
 
     return "limpar"
 

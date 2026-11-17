@@ -50,6 +50,9 @@ def montar_grafo():
     construtor.add_node("responder_andamento", nos.responder_andamento)
     construtor.add_node("validar_andamento", nos.validar_andamento)
     construtor.add_node("falha_andamento", nos.falha_andamento)
+    construtor.add_node("responder_duvida", nos.responder_duvida)
+    construtor.add_node("validar_duvida", nos.validar_duvida)
+    construtor.add_node("falha_duvida", nos.falha_duvida)
 
     # O Roteador: o comando decide por onde a mensagem entra. Sem LLM -
     # a pessoa ja disse a intencao ao escolher o comando.
@@ -60,6 +63,7 @@ def montar_grafo():
             "interpretar": "interpretar",
             "responder_compromisso": "responder_compromisso",
             "responder_andamento": "responder_andamento",
+            "responder_duvida": "responder_duvida",
         },
     )
 
@@ -73,6 +77,21 @@ def montar_grafo():
         {
             "responder_andamento": "responder_andamento",
             "falha_andamento": "falha_andamento",
+            "limpar": "limpar",
+        },
+    )
+
+    # Mesmo desenho dos outros: agente, guardrail, e uma volta quando o
+    # guardrail reprova. A ferramenta fica dentro do no.
+    construtor.add_edge("responder_duvida", "validar_duvida")
+    construtor.add_edge("falha_duvida", "limpar")
+
+    construtor.add_conditional_edges(
+        "validar_duvida",
+        nos.rumo_apos_duvida,
+        {
+            "responder_duvida": "responder_duvida",
+            "falha_duvida": "falha_duvida",
             "limpar": "limpar",
         },
     )
