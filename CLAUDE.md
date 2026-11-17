@@ -164,13 +164,21 @@ A rede neural ainda **não tem função definitivamente escolhida**. Uma possibi
 - Valor principal: captar informações de compromissos e organizá-las na agenda de um responsável.
 - A organização dos cuidados deve ser colaborativa, sem substituir a autonomia das pessoas.
 - O protótipo pode usar dados fictícios e cenários simulados.
+- **Entrada por comandos explícitos** (decisão de 10/11/2026): `!agenda` informa, `!compromisso` mostra o combinado sem usar IA, `!andamento` responde pergunta livre sobre o compromisso em aberto, `!ajuda` lista tudo. O comando declara a intenção, então o roteamento do grafo é determinístico — nenhuma LLM classifica a entrada. Mensagem sem `!` não chega à API.
+- **Histórico limitado às últimas 12 falas do grupo** (decisão de 10/11/2026). O bastante para entender referência ("ela", "essa consulta") e para o grupo responder a uma pergunta do assistente. Não é a conversa inteira: o prompt cresceria sem teto e contraria a minimização da §8.
+- **Retenção: o mínimo necessário** (decisão de 10/11/2026). Fora as 12 falas do histórico, o texto cru não fica gravado — só o compromisso estruturado. Compromisso concluído tem o thread apagado. `RETER_HISTORICO=1` mantém tudo, só para desenvolvimento. *(Atualizado em 16/11/2026: o "não pode ser consultado depois" deixou de valer. O compromisso gravado fica na tabela da agenda, e é isso que o `!compromisso` mostra. O que some é a conversa, não o compromisso.)*
+- **Memória da conversa: checkpointer do LangGraph, um thread por grupo** (decisão de 10/11/2026). O compromisso é acumulado ao longo das mensagens do grupo; mensagem que contradiz o combinado não sobrescreve, gera pergunta. Um compromisso aberto por grupo de cada vez. Estado em SQLite local, fora do repositório.
+- **Framework de agentes: LangGraph** (decisão de 10/11/2026). O projeto começou em CrewAI e migrou. Motivo: o roteamento entre os agentes e os guardrails passaram a ser arestas explícitas do grafo, em vez de parâmetros de framework, e o conflito de dependência que bloqueava a memória no CrewAI deixou de existir. Detalhes em [`docs/ARQUITETURA.md`](docs/ARQUITETURA.md) §11.
+- **Agente 3 e a base de conhecimento** (decisão de 16/11/2026). `!duvida` responde dúvidas de cuidado a partir do Guia do Cuidador (PDF de 250 páginas em `arquivos/`), e a pergunta sobre o compromisso em aberto passou para `!andamento`. É o único agente com ferramenta: ele mesmo decide chamar a busca no Guia. Determinístico é o guardrail `validar_orientacao`, que reprova resposta sem página citada, sem "não sei", ou com dose e medicamento. Atende a "base de conhecimento" e o "uso de agentes com acesso a API" da §9.
+- **A agenda é uma tool do agente 2** (decisão de 16/11/2026). O compromisso passa a ser gravado numa tabela própria — quem decide chamar a tool é a LLM, como era no CrewAI, mas toda escrita é verificada em código antes de ir ao banco. Além dos campos obrigatórios, **gravar exige responsável confirmado**: sem alguém que aceitou acompanhar, a tool recusa e manda perguntar ao grupo (§6). A resposta só pode afirmar que gravou se a tool confirmar (§4) — quem diz isso é o retorno dela, não a LLM. Atende ao §7.6.
+- **Banco: SQLite por padrão, PostgreSQL por `DATABASE_URL`** (decisão de 16/11/2026). O time usa os dois: quem roda o Docker não troca nada, quem não roda não instala nada. Isso resolve o "banco de dados" que estava em aberto nesta seção, para a agenda.
+- **Embeddings rodam na máquina** (decisão de 16/11/2026). O modelo `intfloat/multilingual-e5-base` indexa o PDF localmente: nenhuma pergunta do grupo sai para um serviço externo ser indexada (§8). Custo: ~1 GB de modelo e `torch`, e o índice é montado quando a API sobe, não na primeira pergunta.
 
 ### Ainda não definido - não presumir como decisão
 
 - Canal de mensagens (WhatsApp, outro mensageiro ou interface própria).
 - Método autorizado de acesso às mensagens e suas eventuais limitações.
 - Provedor de calendário (Google Calendar, Outlook ou outro).
-- Framework de agentes (CrewAI, LangChain, LangGraph ou outro).
 - Modelo de linguagem, API, custos e infraestrutura de execução.
 - Papel final da rede neural, dataset e métricas de treinamento.
 - Banco de dados e tecnologias definitivas do frontend/backend.

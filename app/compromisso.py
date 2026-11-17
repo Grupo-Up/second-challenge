@@ -23,17 +23,101 @@ OBRIGATORIOS = ("tipo", "pessoa_idosa", "data", "horario")
 FORMATO_DATA = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 FORMATO_HORARIO = re.compile(r"^\d{2}:\d{2}$")
 
-# Palavras que afirmam um agendamento que ainda nao acontece nesta etapa
+# Palavras que afirmam uma gravacao na agenda. So valem quando a tool
+# confirmou: ver `validar_resposta`.
 AFIRMA_AGENDAMENTO = re.compile(
     r"\b(agendei|agendado|agendada|marquei|marcado|marcada|registrei|"
-    r"cadastrei|adicionei a agenda|coloquei na agenda)\b",
+    r"registrado|registrada|cadastrei|cadastrado|cadastrada|criei|criado|"
+    r"criada|salvei|salvo|salva|adicionei a agenda|coloquei na agenda)\b",
     re.IGNORECASE,
 )
+
+
+MESES = (
+    "janeiro", "fevereiro", "marco", "abril", "maio", "junho",
+    "julho", "agosto", "setembro", "outubro", "novembro", "dezembro",
+)
+
+DIAS_DA_SEMANA = (
+    "segunda-feira", "terca-feira", "quarta-feira", "quinta-feira",
+    "sexta-feira", "sabado", "domingo",
+)
+
+CONFIRMA_REMARCACAO = re.compile(
+    r"\b(sim|isso|exato|confirmo|confirmado|positivo|"
+    r"remarcad[ao]|remarcaram|remarcou|mudou|mudaram|alterou|alteraram|"
+    r"e o mesmo|eh o mesmo|mesmo compromisso)\b",
+    re.IGNORECASE,
+)
+
+# Respostas que negam: sao dois compromissos diferentes
+NEGA_REMARCACAO = re.compile(
+    r"\b(nao|outro|outra|diferente|segundo|segunda consulta|alem)\b",
+    re.IGNORECASE,
+)
+
+
+def confirma_remarcacao(texto):
+    """A mensagem confirma que foi remarcacao do mesmo compromisso?
+
+    Devolve True, False ou None quando a mensagem nao responde a pergunta.
+    A negativa vem primeiro: "nao, e outro exame" tem "outro" e nao pode
+    ser lido como confirmacao.
+    """
+    if not texto:
+        return None
+
+    if NEGA_REMARCACAO.search(texto):
+        return False
+
+    if CONFIRMA_REMARCACAO.search(texto):
+        return True
+
+    return None
 
 
 def hoje():
     """Data corrente no fuso do projeto, base para datas relativas."""
     return datetime.now(FUSO).date()
+
+
+def data_com_dia(iso):
+    """Converte 2026-11-17 em '2026-11-17, terca-feira'.
+
+    Vai no prompt do agente 1. Sem o nome do dia ele nao tem de onde
+    contar: pedindo "quinta" numa terca, respondia o domingo seguinte.
+    Saber o dia da semana e consulta, nao julgamento - fica em codigo.
+    """
+    try:
+        dia = date.fromisoformat(str(iso))
+    except ValueError:
+        return str(iso)
+
+    return f"{dia.isoformat()}, {DIAS_DA_SEMANA[dia.weekday()]}"
+
+
+def data_por_extenso(iso):
+    """Converte AAAA-MM-DD em '11 de novembro de 2026'.
+
+    A conversao era regra de prompt e a LLM errava o dia: o compromisso
+    trazia 2026-11-11 e a resposta ao grupo saia "07 de novembro de 2026".
+    Escrever a data e conversao mecanica, nao julgamento - fica em codigo,
+    onde o resultado e sempre o mesmo.
+
+    Os meses ficam numa tupla porque `locale` em portugues depende de
+    pt_BR instalado no sistema, o que nao se pode assumir no Windows.
+    """
+    if not iso:
+        return None
+
+    try:
+        data = date.fromisoformat(str(iso))
+    except ValueError:
+        # Formato invalido ja e barrado por validar_extracao; aqui so
+        # devolve como veio, sem mascarar o problema
+        return str(iso)
+
+    return f"{data.day:02d} de {MESES[data.month - 1]} de {data.year}"
 
 
 class Compromisso(BaseModel):
@@ -49,6 +133,13 @@ class Compromisso(BaseModel):
     local: Optional[str] = None
     responsavel: Optional[str] = Field(
         None, description="so quem aceitou explicitamente a tarefa"
+    )
+    remarcacao: bool = Field(
+        False,
+        description=(
+            "a mensagem diz que um compromisso ja combinado mudou. So "
+            "entao um dado novo pode substituir um dado anterior"
+        ),
     )
     classificacao: Literal["cuidado", "fora_do_escopo", "conversa"] = Field(
         "conversa",
@@ -94,11 +185,9 @@ def problemas_de_formato(compromisso):
 def interpretar_json(texto):
     """Le o JSON produzido pelo agente.
 
-    O CrewAI usa o instructor para saida estruturada, mas a versao do
-    instructor deste ambiente e incompativel com o mcp que o CrewAI exige
-    (mcp~=1.28.1). Por isso o agente devolve JSON em texto e o parse fica
-    aqui, com o json_repair tolerando as falhas comuns de LLM: cerca de
-    markdown, virgula sobrando, aspas trocadas.
+    O agente devolve JSON em texto e o parse fica aqui, com o json_repair
+    tolerando as falhas comuns de LLM: cerca de markdown, virgula sobrando,
+    aspas trocadas.
     """
     bruto = str(texto).strip()
 
@@ -116,8 +205,9 @@ def interpretar_json(texto):
 def validar_extracao(saida):
     """Guardrail do agente de interpretacao.
 
-    O CrewAI reexecuta a tarefa com a mensagem de erro quando falha, e usa
-    o valor devolvido aqui como saida da tarefa.
+    Devolve (True, json_normalizado) ou (False, motivo). O no
+    `validar_extracao` do grafo usa o motivo para reexecutar o agente com o
+    erro na conversa.
     """
     dados = interpretar_json(saida)
 
@@ -150,7 +240,7 @@ def validar_extracao(saida):
             "de deduzir um valor.",
         )
 
-    # Devolve o JSON normalizado: e o que o agente 2 recebe pelo context.
+    # Devolve o JSON normalizado: e o que o agente 2 recebe pelo estado.
     # A data fica em AAAA-MM-DD, que e o formato verificavel pelo regex e o
     # que a API de calendario vai usar. Escrever a data por extenso para o
     # grupo e regra da tarefa do agente 2.
@@ -160,23 +250,227 @@ def validar_extracao(saida):
     )
 
 
-def validar_resposta(saida):
-    """Guardrail do agente de coordenacao.
+# Mencoes de data e horario no texto de uma resposta. Servem para pegar o
+# agente inventando dado que o compromisso nao tem.
+MENCIONA_DATA = re.compile(
+    r"\b(\d{1,2}\s*/\s*\d{1,2}|" + "|".join(MESES) + r"|março)\b",
+    re.IGNORECASE,
+)
+MENCIONA_HORARIO = re.compile(r"\b\d{1,2}\s*[:h]\s*\d{0,2}\b", re.IGNORECASE)
 
-    Nesta etapa nada e gravado em agenda nenhuma, entao a resposta nao pode
-    afirmar que o compromisso foi agendado (CLAUDE.md, secao 4).
+# Como cada campo aparece no resumo ao grupo
+ROTULOS = (
+    ("tipo", "Tipo"),
+    ("especialidade", "Especialidade"),
+    ("pessoa_idosa", "Pessoa"),
+    ("data", "Data"),
+    ("horario", "Horario"),
+    ("local", "Local"),
+    ("responsavel", "Quem acompanha"),
+)
+
+
+def resumir(compromisso):
+    """Monta o texto do compromisso em aberto, sem LLM nenhuma.
+
+    Deterministico de ponta a ponta: mesma entrada, mesma saida, e nenhuma
+    chance de inventar um dado que nao esta ali. E o que responde ao
+    comando !compromisso.
+    """
+    dados = compromisso or {}
+
+    if not any(dados.get(campo) for campo, _ in ROTULOS):
+        return "Nenhum compromisso em aberto neste grupo."
+
+    linhas = ["Compromisso em aberto:"]
+
+    for campo, rotulo in ROTULOS:
+        valor = dados.get(campo)
+
+        if campo == "data" and valor:
+            valor = data_por_extenso(valor)
+
+        linhas.append(f"- {rotulo}: {valor if valor else 'ainda nao informado'}")
+
+    pendentes = faltantes(dados)
+
+    if pendentes:
+        linhas.append("")
+        linhas.append("Ainda falta: " + ", ".join(pendentes) + ".")
+
+    linhas.append("")
+    linhas.append("Nada foi gravado em agenda nesta etapa.")
+
+    return "\n".join(linhas)
+
+
+# Resposta sem pagina citada veio da memoria do modelo, nao do Guia.
+CITA_PAGINA = re.compile(r"p[aá]g(?:ina)?s?\.?\s*\d+", re.IGNORECASE)
+ADMITE_NAO_SABER = re.compile(r"n[aã]o sei", re.IGNORECASE)
+
+# "ml" e "g" ficam de fora: aparecem em hidratacao e alimentacao no Guia.
+INDICA_DOSE = re.compile(
+    r"\b\d+[\d.,]*\s*(mg|mcg|comprimidos?|c[aá]psulas?|ampolas?|gotas?)\b",
+    re.IGNORECASE,
+)
+
+# O objeto e obrigatorio, senao "tome banho sentada" seria barrado.
+PRESCREVE = re.compile(
+    r"\b(tome|tomar|d[eê]|dar|administre|administrar|aumente|diminua|suspenda)\s+"
+    r"(?:\w+\s+){0,3}"
+    r"(rem[eé]dios?|medicamentos?|dose|dosagem|comprimidos?|c[aá]psulas?)\b",
+    re.IGNORECASE,
+)
+
+
+def resumir_gravados(linhas):
+    """Lista os compromissos ja gravados na agenda, sem LLM.
+
+    Vai junto do `resumir()` no comando !compromisso: o compromisso em
+    aberto mora no estado do grafo e some quando o thread e apagado; estes
+    ficam no banco.
+    """
+    if not linhas:
+        return ""
+
+    saida = ["Ja gravados na agenda:"]
+
+    for linha in linhas:
+        partes = [f"#{linha.get('id')}", linha.get("tipo") or "compromisso"]
+
+        if linha.get("especialidade"):
+            partes.append(f"({linha['especialidade']})")
+
+        partes.append(f"- {linha.get('pessoa_idosa')}")
+        partes.append(f"- {data_por_extenso(linha.get('data')) or 'sem data'}")
+        partes.append(f"as {linha.get('horario')}")
+
+        if linha.get("local"):
+            partes.append(f"- {linha['local']}")
+
+        partes.append(f"- {linha.get('responsavel') or 'sem acompanhante definido'}")
+
+        saida.append("- " + " ".join(partes))
+
+    return "\n".join(saida)
+
+
+def validar_orientacao(saida):
+    """Guardrail do agente 3. Sem LLM.
+
+    Os outros guardrails pegam dado de compromisso inventado; este pega
+    saude inventada. O agente decide se consulta o Guia, mas a resposta so
+    passa se citar a pagina ou admitir que nao sabe (CLAUDE.md, secao 5).
     """
     texto = str(saida).strip()
 
-    encontrados = sorted(set(m.lower() for m in AFIRMA_AGENDAMENTO.findall(texto)))
-
-    if encontrados:
+    if len(texto) < 15:
         return (
             False,
-            "A resposta afirma um agendamento que nao aconteceu "
-            "(" + ", ".join(encontrados) + "). "
-            "Esta etapa apenas organiza a informacao e confirma com o grupo. "
-            "Reescreva sem dizer que o compromisso foi agendado ou registrado.",
+            "A resposta veio vazia ou curta demais. Responda a pergunta com "
+            "base nos trechos do Guia do Cuidador, citando a pagina.",
         )
+
+    dose = sorted(set(m.group(0).lower() for m in INDICA_DOSE.finditer(texto)))
+
+    if dose:
+        return (
+            False,
+            "A resposta indica dose ou quantidade de medicamento "
+            "(" + ", ".join(dose) + "). "
+            "Este assistente nao orienta medicacao. Reescreva sem dose e "
+            "oriente a procurar um profissional de saude.",
+        )
+
+    if PRESCREVE.search(texto):
+        return (
+            False,
+            "A resposta diz para dar, tomar ou alterar medicamento. Este "
+            "assistente nao orienta medicacao. Reescreva orientando a "
+            "procurar um profissional de saude.",
+        )
+
+    if not CITA_PAGINA.search(texto) and not ADMITE_NAO_SABER.search(texto):
+        return (
+            False,
+            "A resposta nao cita a pagina de onde a informacao veio. Use a "
+            "ferramenta de busca no Guia do Cuidador, responda apenas com o "
+            "que estiver nos trechos e cite a pagina. Se os trechos nao "
+            "responderem, escreva: Nao sei. Essa informacao nao esta no "
+            "material disponivel.",
+        )
+
+    return (True, texto)
+
+
+def validar_andamento(saida, compromisso):
+    """Guardrail da resposta a uma pergunta do grupo.
+
+    Alem do que `validar_resposta` checa, pega o caso proprio da pergunta
+    livre: o agente responder "a consulta e dia 12" quando o compromisso
+    nao tem data nenhuma. Perguntar nao pode virar porta de entrada para
+    dado inventado (CLAUDE.md, secao 7).
+    """
+    aprovado, texto = validar_resposta(saida)
+
+    if not aprovado:
+        return (aprovado, texto)
+
+    dados = compromisso or {}
+
+    if not dados.get("data") and MENCIONA_DATA.search(texto):
+        return (
+            False,
+            "A resposta menciona uma data, mas o compromisso nao tem data "
+            "informada. Responda que a data ainda nao foi informada e "
+            "pergunte ao grupo qual e.",
+        )
+
+    if not dados.get("horario") and MENCIONA_HORARIO.search(texto):
+        return (
+            False,
+            "A resposta menciona um horario, mas o compromisso nao tem "
+            "horario informado. Responda que o horario ainda nao foi "
+            "informado e pergunte ao grupo qual e.",
+        )
+
+    return (True, texto)
+
+
+def validar_resposta(saida, gravou=False):
+    """Guardrail do agente de coordenacao.
+
+    `gravou` vem do retorno da tool de agenda, nao do que a LLM diz ter
+    feito. Sem confirmacao da tool, a resposta nao pode afirmar que gravou
+    (CLAUDE.md, secao 4).
+
+    Devolve (True, texto) ou (False, motivo), no mesmo contrato de
+    `validar_extracao`.
+    """
+    texto = str(saida).strip()
+
+    # Resposta vazia passava: nao tem palavra de agendamento, entao nada
+    # era encontrado e o guardrail aprovava. O grupo receberia uma
+    # mensagem em branco. Acontece quando o prompt fica longo e o modelo
+    # gasta o orcamento de tokens no raciocinio interno.
+    if len(texto) < 15:
+        return (
+            False,
+            "A resposta veio vazia ou curta demais. Escreva a mensagem ao "
+            "grupo com o resumo do compromisso e as perguntas do que falta.",
+        )
+
+    if not gravou:
+        encontrados = sorted(set(m.lower() for m in AFIRMA_AGENDAMENTO.findall(texto)))
+
+        if encontrados:
+            return (
+                False,
+                "A resposta afirma um agendamento que nao aconteceu "
+                "(" + ", ".join(encontrados) + "). "
+                "A tool de agenda nao confirmou nenhuma operacao nesta "
+                "mensagem. Reescreva sem dizer que o compromisso foi "
+                "gravado, e pergunte ao grupo o que ainda falta.",
+            )
 
     return (True, texto)

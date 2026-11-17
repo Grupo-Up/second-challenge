@@ -1,0 +1,16 @@
+services:
+  postgres:
+    image: postgres:16
+    container_name: agente2-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: agenda
+      POSTGRES_USER: agenda_app
+      POSTGRES_PASSWORD: agenda_dev_password
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+volumes:
+  postgres_data:
