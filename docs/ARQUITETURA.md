@@ -18,6 +18,9 @@ challenge-2/
 │   │   ├── interprete.py    # agente 1 — quem ele é
 │   │   ├── coordenador.py   # agente 2 — quem ele é
 │   │   └── RAG.py           # agente 3 — quem ele é, mais a tool e o índice
+│   ├── tools/
+│   │   ├── agenda.py        # a tool do agente 2 — grava os compromissos
+│   │   └── banco.py         # SQLite ou Postgres, pela DATABASE_URL
 │   └── graph/
 │       ├── estado.py        # o estado que atravessa o grafo
 │       ├── prompts.py       # o que se pede a cada agente
@@ -118,7 +121,12 @@ Este é o **Roteador** do desenho original no LangGraph Builder, mas determinís
 
 ### `!compromisso` — sem LLM nenhuma
 
-`resumir()` (`app/compromisso.py`) formata o estado direto em texto. Zero token, zero latência, e nenhuma chance de inventar um dado que não está ali. Campo vazio vira "ainda nao informado", explicitamente.
+Duas seções, as duas sem token nenhum:
+
+- **o que o grupo está montando** — `resumir()` (`app/compromisso.py`) formata o estado do grafo. Campo vazio vira "ainda nao informado", explicitamente;
+- **o que já foi gravado** — `listar_ativos()` lê a tabela e `resumir_gravados()` formata.
+
+A segunda existe porque o estado do grafo some: quando o compromisso encerra, o thread é apagado (`grafo.py`). O que está no banco fica.
 
 ### `!andamento` — pergunta livre, com guardrail próprio
 
@@ -364,25 +372,61 @@ dia 05 de novembro de 2026, as 15:00, na clinica do centro.
 Quem podera acompanha-la nesse dia?
 ```
 
-Repare que o texto não diz "está marcada". Não pode: `marcada` está no regex do `validar_resposta`, e a resposta seria rejeitada.
+Enquanto a tool não confirmar uma gravação, o texto não pode dizer "está marcada": `marcada` está no regex do `validar_resposta` e a resposta é rejeitada.
 
 Três obrigações:
 
 - **Pedir o que falta.** Se `data` ou `horario` estão nulos, pergunta. Se não há `responsavel`, pergunta quem pode acompanhar — e **nunca escolhe alguém**.
-- **Escrever a data por extenso.** O JSON traz `2026-11-05`; o grupo lê "05 de novembro de 2026". A conversão é regra do prompt, com a lista dos doze meses escrita nele. Não há código formatando data.
-- **Não mentir sobre agendamento.** Nada foi gravado em agenda nesta etapa.
+- **Escrever a data por extenso.** O compromisso chega com dois campos: `data` em `AAAA-MM-DD`, que é o que a tool aceita, e `data_por_extenso`, que é o que vai no texto. O agente copia cada uma; não recalcula nenhuma.
+- **Não mentir sobre agendamento.** Só pode afirmar que gravou se a tool devolver confirmação.
+
+### A tool `agenda`
+
+`app/tools/agenda.py`, anexada ao agente 2 no nó `coordenar` via `bind_tools`. **Quem decide chamá-la é a LLM**, no meio da resposta, como era no CrewAI. Quatro ações: `criar`, `consultar`, `alterar`, `deletar`.
+
+```text
+compromisso no prompt → LLM decide chamar → tool grava ou recusa
+                      → LLM conta ao grupo → guardrail confere
+```
+
+Teto de 2 voltas (`MAX_CHAMADAS`). O retorno da tool fica em `gravacao`, no estado — é a única prova de que algo foi gravado.
+
+O agente escolhe a ação e os campos, **nunca SQL**. E como quem preenche os argumentos é uma LLM, toda escrita é verificada dentro da tool antes de ir ao banco:
+
+| Verificação | Efeito |
+| --- | --- |
+| `tipo`, `pessoa_idosa`, `data`, `horario` presentes | sem isso, recusa |
+| **`responsavel` presente** | sem isso, recusa e manda perguntar ao grupo |
+| data em `AAAA-MM-DD`, existente no calendário, não no passado | recusa |
+| mesmo tipo + pessoa + data + horário já ativo | recusa como duplicata |
+| `deletar` | vira `status = 'cancelado'`; a linha não some |
+
+A exigência de `responsavel` **não vinha da branch `agente_tool`** — foi acrescentada aqui. Sem ela o compromisso era gravado assim que tivesse data e hora, antes de alguém aceitar acompanhar, o que contraria o `CLAUDE.md` §6: _o sistema não deve decidir sozinho quem será obrigado a levar a pessoa idosa_.
+
+#### Onde os compromissos ficam
+
+`app/tools/banco.py` escolhe o banco pela `DATABASE_URL` — é o único arquivo que sabe que há dois:
+
+| `DATABASE_URL` | Banco | Precisa instalar |
+| --- | --- | --- |
+| começa com `postgresql://` | o container do `compose.yml` | Docker + `psycopg[binary]` |
+| não definida | `dados/agenda.sqlite` | nada |
+
+O SQL é escrito uma vez com `?`, e o marcador vira `%s` no Postgres. Os dois caminhos ficam exercitados porque o time usa os dois.
 
 ### Guardrail `validar_resposta`
 
-Em `app/compromisso.py:163`, chamado pelo nó de mesmo nome (`app/graph/nos.py:153`). Passa um regex procurando "agendei", "marquei", "registrei", "cadastrei", "coloquei na agenda". Achou? Rejeita, e a aresta condicional manda o fluxo de volta ao nó `coordenar` com o motivo — mesmo mecanismo do guardrail do Agente 1, mesmo limite de tentativas.
+Em `app/compromisso.py`, chamado pelo nó de mesmo nome. Procura "agendei", "marquei", "registrei", "criado", "cadastrei", "coloquei na agenda" — **e só reprova quando a tool não confirmou nada** nesta mensagem. Rejeitou? A aresta condicional manda o fluxo de volta ao `coordenar` com o motivo, como no guardrail do Agente 1.
 
-Existe porque **nada é gravado em agenda nenhuma ainda**. Sem esse guardrail, a LLM diria "pronto, agendei!" — e a família confiaria num evento que não existe. Ver `CLAUDE.md` §4: _nunca informar que agendou se a API de calendário não confirmar a criação_.
+O que decide é o campo `gravacao` do estado, preenchido com o retorno da tool — **não o que a LLM diz ter feito**. É o `CLAUDE.md` §4: _nunca informar que agendou se a API não confirmar a criação_.
+
+> Na branch `agente_tool` esse guardrail contradizia a instrução dada ao agente: ele mandava informar o resultado da tool e ao mesmo tempo barrava as palavras para isso. Escapava por uma brecha — "criado" não estava na lista.
 
 ---
 
 ## 4. `app/compromisso.py` — a metade sem IA
 
-Os dois agentes compartilham este arquivo. Ele não chama LLM nenhuma: é Python comum, com Pydantic e expressões regulares. Mesma entrada, mesma saída, sempre.
+Os três agentes compartilham este arquivo. Ele não chama LLM nenhuma: é Python comum, com Pydantic e expressões regulares. Mesma entrada, mesma saída, sempre.
 
 A divisão de responsabilidade entre os dois arquivos é a ideia central do projeto:
 
@@ -434,18 +478,21 @@ Três razões práticas:
 
 ---
 
-## 5. Por que dois agentes e não um
+## 5. Por que três agentes e não um
 
 Papéis diferentes, falhas diferentes.
 
-| Agente          | Como ele erra                      | O que pega o erro                                        |
-| --------------- | ---------------------------------- | -------------------------------------------------------- |
-| 1 — Intérprete  | Extrai dado errado, inventa data   | `validar_extracao`: Pydantic + formato + data no passado |
-| 2 — Coordenador | Fala demais, promete o que não fez | `validar_resposta`: regex de afirmação de agendamento    |
+| Agente          | Como ele erra                        | O que pega o erro                                        |
+| --------------- | ------------------------------------ | -------------------------------------------------------- |
+| 1 — Intérprete  | Extrai dado errado, inventa data     | `validar_extracao`: Pydantic + formato + data no passado |
+| 2 — Coordenador | Promete o que não fez, grava cedo    | `validar_resposta` + as checagens dentro da tool          |
+| 3 — Consultor   | Responde saúde de memória, sem fonte | `validar_orientacao`: exige página citada, veta dose     |
 
-Um agente único misturaria as duas responsabilidades num prompt só, e qualquer validação teria que adivinhar qual metade falhou. Separando, cada guardrail sabe exatamente o que está checando e a aresta de retry devolve o fluxo só à etapa quebrada.
+Um agente único misturaria tudo num prompt só, e qualquer validação teria que adivinhar qual parte falhou. Separando, cada guardrail sabe exatamente o que está checando e a aresta de retry devolve o fluxo só à etapa quebrada.
 
-Também atende o requisito acadêmico de **dois agentes de IA colaborando** (`CLAUDE.md` §9).
+O 3 é separado do 2 por um motivo a mais: as personas se contradizem. O Coordenador existe para **não** opinar sobre saúde; o Consultor existe para repassar o que o material de saúde diz. Numa persona só, seriam ordens opostas para a mesma LLM.
+
+Atende com folga o requisito acadêmico de **pelo menos dois agentes de IA colaborando** (`CLAUDE.md` §9).
 
 ---
 
@@ -536,14 +583,14 @@ Teste mais curto, só para ver se o bot escuta o grupo: mande `!ping` → respon
 
 Nada aqui está decidido contra — é escopo não implementado.
 
-- **Gravação na agenda.** Nenhuma API de calendário conectada. O "Agente 2" do `CLAUDE.md` §5 prevê criar eventos; hoje ele só coordena a conversa. O provedor (Google Calendar, Outlook) continua em aberto — `CLAUDE.md` §10.
+- **Calendário de verdade.** Os compromissos são gravados numa tabela própria, não numa agenda que a pessoa abre no celular. Google Calendar e Outlook continuam em aberto — `CLAUDE.md` §10.
 - **Resolver o conflito pela conversa.** Quando a mensagem nova contradiz o combinado, o assistente pergunta se é remarcação ou compromisso novo — mas **não há como responder**. Dizer "é remarcação" na mensagem seguinte gera outra extração, que esbarra no mesmo conflito. Falta um caminho que leia a resposta do grupo e aplique a decisão. É a maior lacuna de hoje.
 
 - **Mais de um compromisso aberto por grupo.** O thread guarda um só. Duas consultas em aberto ao mesmo tempo caem no caminho do conflito, uma de cada vez. Suportar vários exige identificador por compromisso, não por grupo — `CLAUDE.md` §4 e §7.7.
 
 - **"É outro compromisso" descarta o segundo.** Quando o grupo nega a remarcação — "não, é outro exame" —, o sistema mantém o compromisso antigo e **joga fora o novo, em silêncio**. O certo seria abrir um segundo compromisso, mas o thread guarda um só. Mesma raiz do item abaixo.
 
-- **Consultar compromisso antigo.** Perguntar "quando é a consulta da vó?" cai como `conversa` — não existe intenção de consulta no grafo. E o dado já não está lá: o compromisso encerrado é apagado com o thread. Para isso funcionar falta um **registro de compromissos com identificador**, separado do estado de conversa do checkpointer, gravado antes do `delete_thread`. Decisão adiada conscientemente.
+- **Consultar compromisso antigo pela conversa.** O `!compromisso` já lista o que está gravado, mas perguntar "quando é a consulta da vó?" em texto livre ainda cai como `conversa`: não existe intenção de consulta no grafo. A tool tem a ação `consultar` e o agente 2 pode chamá-la, mas só no caminho do `!agenda`.
 
 - **Expurgo de conversa abandonada.** Grupo que começa um compromisso e nunca termina mantém o thread para sempre — o `delete_thread` só roda quando encerra. Varrer por idade exigiria listar threads por data, que o `SqliteSaver` não expõe.
 - **Atualização e cancelamento.** Remarcação é detectada (vira conflito) mas não aplicada; cancelamento não é reconhecido. `CLAUDE.md` §7 item 7.
@@ -560,6 +607,7 @@ Nada aqui está decidido contra — é escopo não implementado.
 - **LLM:** `openai/gpt-oss-20b`, via Groq, pelo `langchain-groq`. Chave em `.env` (`GROQ_API_KEY`), carregada por `load_dotenv()`. O modelo pode ser trocado por `GROQ_MODEL` no ambiente.
 - **`max_tokens=2000`** (`app/graph/nos.py:46`) não é folga: o `gpt-oss-20b` é modelo de raciocínio e gasta parte dos tokens no raciocínio interno. Com limite curto não sobra nada para a resposta e o conteúdo chega vazio.
 - **`reasoning_format="hidden"`** no mesmo lugar. Sem isso o raciocínio do modelo vem junto no campo de conteúdo, o JSON do Agente 1 chega misturado a texto solto e o guardrail reprova uma saída que estava correta.
+- **Banco da agenda:** SQLite por padrão (`dados/agenda.sqlite`, nada a instalar) ou PostgreSQL 16 pelo `compose.yml`, se `DATABASE_URL` estiver definida. O `psycopg[binary]` é opcional e só o segundo caso precisa dele.
 - **Embeddings:** `intfloat/multilingual-e5-base`, pelo `sentence-transformers`, rodando **local**. Nenhuma pergunta do grupo sai da máquina para ser indexada. São ~1 GB entre modelo e `torch`, baixados do HuggingFace na primeira execução.
 - **LangGraph 1.2.20**, **langchain-groq 1.1.3**, **Baileys 7.0.0-rc14** (WhatsApp), **FastAPI/uvicorn**.
 - O parse do JSON fica em `compromisso.py`, e não numa saída estruturada do framework: ele é a fronteira entre a LLM e o resto do sistema, e precisa valer igual qualquer que seja o framework por baixo.

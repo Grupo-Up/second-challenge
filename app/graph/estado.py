@@ -28,6 +28,10 @@ RETER_HISTORICO = os.environ.get("RETER_HISTORICO") == "1"
 # correcoes.
 MAX_TENTATIVAS = 3
 
+# Teto de voltas do tool-calling do agente 2, equivalente ao max_iter=2 do
+# CrewAI. Sem teto, uma LLM teimosa fica pedindo a tool sem parar.
+MAX_CHAMADAS = 2
+
 # Campos em que uma mensagem nova pode CONTRADIZER o que ja foi combinado.
 # Preencher um campo vazio e acumular; trocar o valor de um campo que ja
 # tinha outro e remarcacao ou um segundo compromisso - e o sistema ainda
@@ -93,6 +97,10 @@ class EstadoGrupo(TypedDict, total=False):
     resposta_bruta: Optional[str]
     erro_resposta: Optional[str]
     tentativas_resposta: int
+    # O que a tool de agenda devolveu nesta mensagem, se foi chamada. E a
+    # unica prova de que algo foi gravado - o guardrail le daqui, nao do
+    # que a LLM afirma.
+    gravacao: Optional[str]
 
     # --- saida ---
     resposta: Optional[str]

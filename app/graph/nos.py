@@ -20,16 +20,19 @@ import json
 import os
 
 from dotenv import load_dotenv
+from langchain_core.messages import ToolMessage
 from langchain_groq import ChatGroq
 
 from app.agents import RAG, coordenador, interprete
 from app.compromisso import (
     confirma_remarcacao,
+    data_com_dia,
     data_por_extenso,
     faltantes,
     hoje,
     interpretar_json,
     resumir,
+    resumir_gravados,
     validar_andamento as checar_andamento,
     validar_extracao as checar_extracao,
     validar_orientacao as checar_orientacao,
@@ -38,11 +41,13 @@ from app.compromisso import (
 from app.graph import prompts
 from app.graph.estado import (
     CAMPOS_EXCLUDENTES,
+    MAX_CHAMADAS,
     MAX_HISTORICO,
     MAX_TENTATIVAS,
     RETER_HISTORICO,
     EstadoGrupo,
 )
+from app.tools.agenda import agenda, listar_ativos
 
 # Carrega a chave da API. O .env e procurado a partir do diretorio onde o
 # processo foi iniciado, entao os comandos rodam da raiz do projeto.
@@ -87,6 +92,49 @@ def _conversar(persona, pedido, resposta_anterior=None, erro=None):
     return str(llm.invoke(mensagens).content).strip()
 
 
+def _conversar_com_agenda(persona, pedido, resposta_anterior=None, erro=None):
+    """Como `_conversar`, mas com a tool de agenda na mao do agente.
+
+    Devolve (texto, gravacao). `gravacao` e o que a tool respondeu, ou None
+    se o agente nao a chamou - e o que o guardrail usa para saber se pode
+    deixar a resposta afirmar que gravou.
+    """
+    mensagens = [
+        {"role": "system", "content": persona},
+        {"role": "user", "content": pedido},
+    ]
+
+    if erro:
+        mensagens.append({"role": "assistant", "content": resposta_anterior or ""})
+        mensagens.append(
+            {"role": "user", "content": prompts.PROMPT_CORRIGIR.format(erro=erro)}
+        )
+
+    com_tool = llm.bind_tools([agenda])
+    resposta = com_tool.invoke(mensagens)
+
+    gravacao = None
+    voltas = 0
+
+    while getattr(resposta, "tool_calls", None) and voltas < MAX_CHAMADAS:
+        mensagens.append(resposta)
+
+        for chamada in resposta.tool_calls:
+            retorno = agenda.invoke(chamada["args"])
+            gravacao = retorno
+
+            print("agenda:", chamada["args"].get("acao"), "->", retorno, flush=True)
+
+            mensagens.append(
+                ToolMessage(content=retorno, tool_call_id=chamada["id"])
+            )
+
+        resposta = com_tool.invoke(mensagens)
+        voltas += 1
+
+    return str(resposta.content).strip(), gravacao
+
+
 # ---------------------------------------------------------------------------
 # Agente 1 e seu guardrail
 # ---------------------------------------------------------------------------
@@ -95,7 +143,7 @@ def _conversar(persona, pedido, resposta_anterior=None, erro=None):
 def interpretar(estado: EstadoGrupo) -> dict:
     """Agente 1: le a mensagem e devolve o JSON do compromisso."""
     pedido = prompts.PROMPT_INTERPRETAR.format(
-        data_mensagem=estado.get("data_mensagem") or str(hoje()),
+        data_mensagem=data_com_dia(estado.get("data_mensagem") or hoje()),
         mensagem=estado["mensagem"],
         autor=estado.get("autor") or "desconhecido",
     )
@@ -297,16 +345,17 @@ def coordenar(estado: EstadoGrupo) -> dict:
         if campo != "classificacao"
     }
 
-    # A data chega ao agente ja por extenso. Converter era regra de prompt
-    # e a LLM errava o dia; agora ela so copia.
+    # Duas datas, de proposito: a tool exige AAAA-MM-DD e o texto ao grupo
+    # precisa dela por extenso. Converter era regra de prompt e a LLM
+    # errava o dia; agora ela so copia a que serve a cada uso.
     if dados.get("data"):
-        dados["data"] = data_por_extenso(dados["data"])
+        dados["data_por_extenso"] = data_por_extenso(dados["data"])
 
     pedido = prompts.PROMPT_COORDENAR.format(
         compromisso=json.dumps(dados, ensure_ascii=False, indent=2)
     )
 
-    texto = _conversar(
+    texto, gravacao = _conversar_com_agenda(
         coordenador.PERSONA,
         pedido,
         resposta_anterior=estado.get("resposta_bruta"),
@@ -315,6 +364,7 @@ def coordenar(estado: EstadoGrupo) -> dict:
 
     return {
         "resposta_bruta": texto,
+        "gravacao": gravacao,
         "tentativas_resposta": estado.get("tentativas_resposta", 0) + 1,
     }
 
@@ -322,10 +372,12 @@ def coordenar(estado: EstadoGrupo) -> dict:
 def validar_resposta(estado: EstadoGrupo) -> dict:
     """Guardrail do agente 2. Codigo deterministico, sem LLM.
 
-    Nada e gravado em agenda nesta etapa, entao a resposta nao pode afirmar
-    que o compromisso foi agendado (CLAUDE.md, secao 4).
+    A resposta so pode afirmar que gravou se a tool tiver confirmado - e
+    quem diz isso e o `gravacao` no estado, nao a LLM (CLAUDE.md, secao 4).
     """
-    aprovado, saida = checar_resposta(estado.get("resposta_bruta") or "")
+    aprovado, saida = checar_resposta(
+        estado.get("resposta_bruta") or "", bool(estado.get("gravacao"))
+    )
 
     if not aprovado:
         return {"erro_resposta": saida, "resposta": None}
@@ -341,12 +393,24 @@ def validar_resposta(estado: EstadoGrupo) -> dict:
 def responder_compromisso(estado: EstadoGrupo) -> dict:
     """Comando !compromisso: mostra o que esta combinado. Sem LLM.
 
-    Formata o estado direto. Nenhuma chamada de API, nenhum token, e
-    nenhuma chance de inventar um dado que nao esta ali.
+    Duas partes: o compromisso que o grupo ainda esta montando, que mora no
+    estado, e os ja gravados na agenda, que moram no banco. O primeiro some
+    quando o thread e apagado; o segundo fica.
     """
     aberto = None if estado.get("encerrado") else estado.get("compromisso")
 
-    return {"resposta": resumir(aberto)}
+    partes = [resumir(aberto)]
+
+    try:
+        gravados = resumir_gravados(listar_ativos())
+    except Exception as erro:
+        print("falha ao ler a agenda:", type(erro).__name__, flush=True)
+        gravados = "Nao foi possivel consultar a agenda agora."
+
+    if gravados:
+        partes.append(gravados)
+
+    return {"resposta": "\n\n".join(partes)}
 
 
 def responder_andamento(estado: EstadoGrupo) -> dict:

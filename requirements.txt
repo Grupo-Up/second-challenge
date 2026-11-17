@@ -37,3 +37,9 @@ torch>=2.15.0
 pypdf>=7.1.0
 # Sem fonttools o pypdf nao le a codificacao de algumas fontes do Guia.
 fonttools>=4.56.0
+
+# --- agenda do agente 2 ---
+# Opcional. Sem DATABASE_URL a agenda usa SQLite, que ja vem no Python.
+# Instale so para usar o Postgres do compose.yml:
+#     pip install "psycopg[binary]"
+# psycopg[binary]>=3.2

@@ -193,6 +193,7 @@ def processar(mensagem, data_mensagem=None, grupo=None, autor=None, comando="age
             "resposta_bruta": None,
             "erro_resposta": None,
             "tentativas_resposta": 0,
+            "gravacao": None,
             "conflitos": [],
         },
         config={"configurable": {"thread_id": thread}},
@@ -201,6 +202,8 @@ def processar(mensagem, data_mensagem=None, grupo=None, autor=None, comando="age
     resultado = {
         "resposta": estado.get("resposta"),
         "compromisso": estado.get("compromisso"),
+        # O que a tool de agenda devolveu, para o log da rota
+        "gravacao": estado.get("gravacao"),
         # O que ESTA mensagem foi, para o log da rota. O compromisso
         # acumulado e sempre 'cuidado' e nao serviria para isso.
         "classificacao": (estado.get("extracao") or {}).get("classificacao"),

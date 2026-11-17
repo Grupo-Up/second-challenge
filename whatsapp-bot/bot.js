@@ -8,6 +8,10 @@ import qrcode from 'qrcode-terminal';
 // Endereco da API que executa os agentes de IA
 const API_AGENTE = process.env.API_AGENTE ?? 'http://localhost:8000/agente';
 
+// Quanto esperar pela API antes de desistir. Sem isso o bot espera para
+// sempre, e o grupo fica preso no "ainda estou analisando".
+const TIMEOUT_API = 90_000;
+
 // Comandos que acionam os agentes. A chave vai para a API e decide por
 // onde a mensagem entra no grafo.
 const COMANDOS = {
@@ -90,6 +94,7 @@ async function consultarAgente(mensagem, dataMensagem, grupo, autor, comando) {
       autor,
       comando,
     }),
+    signal: AbortSignal.timeout(TIMEOUT_API),
   });
 
   if (!resposta.ok) {
@@ -266,7 +271,10 @@ async function iniciarBot() {
         console.error('Erro ao consultar o agente:', erro);
 
         await bot.sendMessage(grupo, {
-          text: 'Nao consegui analisar a mensagem agora. Tente de novo em instantes.',
+          text:
+            erro.name === 'TimeoutError'
+              ? 'A analise demorou demais e foi cancelada. Tente de novo em instantes.'
+              : 'Nao consegui analisar a mensagem agora. Tente de novo em instantes.',
         });
       } finally {
         emAndamento.delete(grupo);

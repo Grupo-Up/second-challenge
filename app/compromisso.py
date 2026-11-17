@@ -23,10 +23,12 @@ OBRIGATORIOS = ("tipo", "pessoa_idosa", "data", "horario")
 FORMATO_DATA = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 FORMATO_HORARIO = re.compile(r"^\d{2}:\d{2}$")
 
-# Palavras que afirmam um agendamento que ainda nao acontece nesta etapa
+# Palavras que afirmam uma gravacao na agenda. So valem quando a tool
+# confirmou: ver `validar_resposta`.
 AFIRMA_AGENDAMENTO = re.compile(
     r"\b(agendei|agendado|agendada|marquei|marcado|marcada|registrei|"
-    r"cadastrei|adicionei a agenda|coloquei na agenda)\b",
+    r"registrado|registrada|cadastrei|cadastrado|cadastrada|criei|criado|"
+    r"criada|salvei|salvo|salva|adicionei a agenda|coloquei na agenda)\b",
     re.IGNORECASE,
 )
 
@@ -34,6 +36,11 @@ AFIRMA_AGENDAMENTO = re.compile(
 MESES = (
     "janeiro", "fevereiro", "marco", "abril", "maio", "junho",
     "julho", "agosto", "setembro", "outubro", "novembro", "dezembro",
+)
+
+DIAS_DA_SEMANA = (
+    "segunda-feira", "terca-feira", "quarta-feira", "quinta-feira",
+    "sexta-feira", "sabado", "domingo",
 )
 
 CONFIRMA_REMARCACAO = re.compile(
@@ -72,6 +79,21 @@ def confirma_remarcacao(texto):
 def hoje():
     """Data corrente no fuso do projeto, base para datas relativas."""
     return datetime.now(FUSO).date()
+
+
+def data_com_dia(iso):
+    """Converte 2026-11-17 em '2026-11-17, terca-feira'.
+
+    Vai no prompt do agente 1. Sem o nome do dia ele nao tem de onde
+    contar: pedindo "quinta" numa terca, respondia o domingo seguinte.
+    Saber o dia da semana e consulta, nao julgamento - fica em codigo.
+    """
+    try:
+        dia = date.fromisoformat(str(iso))
+    except ValueError:
+        return str(iso)
+
+    return f"{dia.isoformat()}, {DIAS_DA_SEMANA[dia.weekday()]}"
 
 
 def data_por_extenso(iso):
@@ -301,6 +323,38 @@ PRESCREVE = re.compile(
 )
 
 
+def resumir_gravados(linhas):
+    """Lista os compromissos ja gravados na agenda, sem LLM.
+
+    Vai junto do `resumir()` no comando !compromisso: o compromisso em
+    aberto mora no estado do grafo e some quando o thread e apagado; estes
+    ficam no banco.
+    """
+    if not linhas:
+        return ""
+
+    saida = ["Ja gravados na agenda:"]
+
+    for linha in linhas:
+        partes = [f"#{linha.get('id')}", linha.get("tipo") or "compromisso"]
+
+        if linha.get("especialidade"):
+            partes.append(f"({linha['especialidade']})")
+
+        partes.append(f"- {linha.get('pessoa_idosa')}")
+        partes.append(f"- {data_por_extenso(linha.get('data')) or 'sem data'}")
+        partes.append(f"as {linha.get('horario')}")
+
+        if linha.get("local"):
+            partes.append(f"- {linha['local']}")
+
+        partes.append(f"- {linha.get('responsavel') or 'sem acompanhante definido'}")
+
+        saida.append("- " + " ".join(partes))
+
+    return "\n".join(saida)
+
+
 def validar_orientacao(saida):
     """Guardrail do agente 3. Sem LLM.
 
@@ -383,11 +437,12 @@ def validar_andamento(saida, compromisso):
     return (True, texto)
 
 
-def validar_resposta(saida):
+def validar_resposta(saida, gravou=False):
     """Guardrail do agente de coordenacao.
 
-    Nesta etapa nada e gravado em agenda nenhuma, entao a resposta nao pode
-    afirmar que o compromisso foi agendado (CLAUDE.md, secao 4).
+    `gravou` vem do retorno da tool de agenda, nao do que a LLM diz ter
+    feito. Sem confirmacao da tool, a resposta nao pode afirmar que gravou
+    (CLAUDE.md, secao 4).
 
     Devolve (True, texto) ou (False, motivo), no mesmo contrato de
     `validar_extracao`.
@@ -405,15 +460,17 @@ def validar_resposta(saida):
             "grupo com o resumo do compromisso e as perguntas do que falta.",
         )
 
-    encontrados = sorted(set(m.lower() for m in AFIRMA_AGENDAMENTO.findall(texto)))
+    if not gravou:
+        encontrados = sorted(set(m.lower() for m in AFIRMA_AGENDAMENTO.findall(texto)))
 
-    if encontrados:
-        return (
-            False,
-            "A resposta afirma um agendamento que nao aconteceu "
-            "(" + ", ".join(encontrados) + "). "
-            "Esta etapa apenas organiza a informacao e confirma com o grupo. "
-            "Reescreva sem dizer que o compromisso foi agendado ou registrado.",
-        )
+        if encontrados:
+            return (
+                False,
+                "A resposta afirma um agendamento que nao aconteceu "
+                "(" + ", ".join(encontrados) + "). "
+                "A tool de agenda nao confirmou nenhuma operacao nesta "
+                "mensagem. Reescreva sem dizer que o compromisso foi "
+                "gravado, e pergunte ao grupo o que ainda falta.",
+            )
 
     return (True, texto)

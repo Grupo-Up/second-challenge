@@ -56,6 +56,17 @@ def rodar(entrada: Entrada):
     compromisso = resultado["compromisso"]
     pendentes = faltantes(compromisso) if compromisso else []
 
+    # O retorno da tool traz tipo, pessoa e data: dado de saude. Sem DEBUG,
+    # registra so se houve gravacao e se deu certo (CLAUDE.md, secao 8).
+    gravacao = resultado.get("gravacao")
+
+    if not gravacao:
+        agenda = "nao chamada"
+    elif gravacao.startswith("Falha") or "nao encontrado" in gravacao:
+        agenda = "recusada"
+    else:
+        agenda = "confirmada"
+
     # Sem DEBUG, registra apenas metadados: nada do conteudo da conversa
     print(
         "classificacao:",
@@ -64,6 +75,8 @@ def rodar(entrada: Entrada):
         ", ".join(pendentes) if pendentes else "nenhum",
         "| compromisso encerrado:",
         "sim" if resultado.get("encerrado") else "nao",
+        "| agenda:",
+        agenda,
         flush=True,
     )
 
@@ -71,6 +84,10 @@ def rodar(entrada: Entrada):
         print("\nCOMPROMISSO:", flush=True)
         for campo, valor in (compromisso or {}).items():
             print(f"  {campo}: {valor}", flush=True)
+
+        if gravacao:
+            print("\nRETORNO DA AGENDA:", flush=True)
+            print(" ", gravacao, flush=True)
 
         print("\nRESPOSTA AO GRUPO:", flush=True)
         print(resultado["resposta"], flush=True)
