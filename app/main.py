@@ -8,13 +8,15 @@ O comando roda a partir da raiz do projeto: e de la que o .env e
 encontrado e que o pacote app fica importavel.
 """
 
+import os
 import sys
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
 from app.agents import RAG
-from app.routes import agente
+from app.queda import servico as detector_de_quedas
+from app.routes import agente, sensor
 
 # O console do Windows usa cp1252 e quebra nos caracteres tipograficos
 # que a LLM costuma devolver
@@ -34,6 +36,11 @@ async def ciclo_de_vida(_app: FastAPI):
     except Exception as erro:
         print("falha ao montar o Guia do Cuidador:", type(erro).__name__, flush=True)
 
+    # Sem modelo em modelos/queda/, so o detector de quedas fica desligado
+    detector_de_quedas.iniciar()
+    if not os.environ.get("QUEDA_TOKEN"):
+        print("aviso: QUEDA_TOKEN nao definido, rotas do detector sem protecao", flush=True)
+
     yield
 
 
@@ -43,3 +50,4 @@ app = FastAPI(
 )
 
 app.include_router(agente.router)
+app.include_router(sensor.router)

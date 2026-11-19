@@ -24,12 +24,15 @@ Alguém escreve no grupo:
 | `!compromisso` | mostra o que está combinado e o que já foi gravado — sem IA, lê o estado e o banco |
 | `!andamento <pergunta>` | pergunta em linguagem livre **sobre o compromisso em aberto** |
 | `!duvida <pergunta>` | pergunta **sobre o cuidado da pessoa idosa**, respondida pelo Guia do Cuidador |
+| `!queda ok` / `!queda falso` | responde ao último alerta de queda do relógio: foi queda ou alarme falso |
 | `!ajuda` | lista os comandos; responde também a qualquer `!` desconhecido |
 | `!ping` | testa se o bot está escutando o grupo |
 
 `!andamento` e `!duvida` são parecidos no formato e diferentes no assunto. *"Quem vai levar a vó?"* é `!andamento` — a resposta está no que o grupo combinou. *"Como dar banho em idoso acamado?"* é `!duvida` — a resposta está no Guia.
 
 Mensagem sem `!` não é processada — conversa comum nem chega à API.
+
+**Detector de quedas.** Além dos comandos, o Apple Watch da pessoa idosa pode mandar o movimento do pulso para a API (pelo app Sensor Logger). Uma LSTM detecta a queda e o bot avisa o grupo, com a orientação do Guia. Passo a passo em [`docs/QUEDA.md`](docs/QUEDA.md).
 
 O bot repassa a mensagem para a API, que roda um grafo de agentes:
 
@@ -229,7 +232,10 @@ challenge-2/
 | `app/compromisso.py` | Modelo Pydantic do compromisso e os guardrails. Código determinístico, sem LLM — é o que impede o sistema de inventar dado ou mentir sobre agendamento. |
 | `app/routes/agente.py` | `POST /agente`, que recebe a mensagem e devolve resposta, compromisso e campos faltantes. |
 | `app/main.py` | Sobe o FastAPI e inclui o router. É o alvo do `uvicorn`. |
-| `whatsapp-bot/bot.js` | Bot em Node com Baileys. Escuta os grupos, reconhece o comando `!agenda`, chama a API e publica a resposta. |
+| `whatsapp-bot/bot.js` | Bot em Node com Baileys. Escuta os grupos, reconhece o comando `!agenda`, chama a API e publica a resposta. Também busca os alertas de queda e trata o `!queda`. |
+| `app/queda/` | Detector de quedas: pré-processamento, modelo, buffer por relógio e alertas. Detalhes em `docs/QUEDA.md`. |
+| `app/routes/sensor.py` | `POST /sensor/sensorlogger` (dados do relógio) e as rotas de alertas usadas pelo bot. |
+| `notebooks/treino_detector_queda.ipynb` | Treino da LSTM no Colab, com quality gate e MLflow. |
 
 `app/agents/` e `app/graph/prompts.py` ficam separados de propósito: **quem é o agente** muda pouco, **o que se pede a ele** muda a cada ajuste de regra.
 
@@ -239,6 +245,7 @@ challenge-2/
 | --- | --- |
 | `CLAUDE.md` | Visão do produto: problema, escopo, requisitos acadêmicos, privacidade, decisões tomadas e pendentes. Fonte de verdade do projeto. Fica na raiz porque é lido automaticamente pelo Claude Code. |
 | `docs/ARQUITETURA.md` | Como o sistema funciona por dentro: o grafo, os agentes em detalhe, os guardrails, o que ainda não existe, documentação do LangGraph. |
+| `docs/QUEDA.md` | Detector de quedas: o que foi corrigido na rede antiga, como gravar com o Apple Watch, treinar, integrar e avaliar. |
 | `README.md` | Este arquivo. |
 
 ### Não versionado
@@ -248,6 +255,7 @@ challenge-2/
 | `.env` | Contém a `GROQ_API_KEY`. |
 | `whatsapp-bot/auth/` | Credenciais da sessão de WhatsApp pareada. Quem tiver esses arquivos acessa a conta. |
 | `dados/` | Estado das conversas e os compromissos gravados, em SQLite. Contém informação de saúde. |
+| `modelos/` | O modelo de queda exportado. Versão e métricas ficam no `config_queda.json` e no MLflow. |
 | `.venv/`, `whatsapp-bot/node_modules/` | Dependências, reinstaláveis. |
 | `__pycache__/` | Artefatos de execução, regerados sozinhos. |
 

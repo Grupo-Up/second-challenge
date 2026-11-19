@@ -5,3 +5,8 @@ __pycache__/
 .venv
 /whatsapp-bot/auth
 /whatsapp-bot/node_modules
+# Modelo de queda treinado (gerado pelo notebook ou pelo
+# scripts/treinar_referencia.py). A versao e as metricas ficam no
+# config_queda.json e no MLflow; o arquivo se compartilha pelo Drive.
+/modelos
+.pytest_cache

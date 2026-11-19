@@ -8,6 +8,21 @@ import qrcode from 'qrcode-terminal';
 // Endereco da API que executa os agentes de IA
 const API_AGENTE = process.env.API_AGENTE ?? 'http://localhost:8000/agente';
 
+// Raiz da API, para as rotas do detector de quedas
+const API_BASE = API_AGENTE.replace(/\/agente\/?$/, '');
+
+// Mesmo valor do QUEDA_TOKEN do .env da API (vazio em desenvolvimento)
+const QUEDA_TOKEN = process.env.QUEDA_TOKEN ?? '';
+
+// De quanto em quanto tempo o bot pergunta a API se ha alerta de queda.
+// O alerta nasce sem ninguem escrever no grupo, entao o bot precisa ir
+// buscar: o fluxo normal so responde a quem manda um comando.
+const INTERVALO_ALERTAS = 5_000;
+
+// Depois do alerta, manda tambem a orientacao do Guia do Cuidador sobre
+// o que fazer apos uma queda, pelo mesmo agente do !duvida
+const ORIENTACAO_APOS_ALERTA = process.env.QUEDA_ORIENTACAO !== '0';
+
 // Quanto esperar pela API antes de desistir. Sem isso o bot espera para
 // sempre, e o grupo fica preso no "ainda estou analisando".
 const TIMEOUT_API = 90_000;
@@ -33,6 +48,8 @@ const AJUDA =
   '!duvida <pergunta> - pergunta sobre o cuidado da pessoa idosa, ' +
   'respondida a partir do Guia do Cuidador.\n' +
   'Exemplo: !duvida como prevenir quedas em casa?\n\n' +
+  '!queda ok / !queda falso - responde ao ultimo alerta de queda do ' +
+  'relogio: ok se foi queda, falso se foi alarme falso.\n\n' +
   '!ajuda - mostra esta lista.\n\n' +
   'Nada e gravado em agenda nesta etapa: o assistente apenas organiza ' +
   'a informacao e confirma com o grupo.\n\n' +
@@ -105,6 +122,93 @@ async function consultarAgente(mensagem, dataMensagem, grupo, autor, comando) {
   return dados.resposta;
 }
 
+// Chamada as rotas do detector de quedas (app/routes/sensor.py)
+async function apiQueda(caminho, opcoes = {}) {
+  const resposta = await fetch(`${API_BASE}${caminho}`, {
+    ...opcoes,
+    headers: {
+      'Content-Type': 'application/json',
+      ...(QUEDA_TOKEN ? { Authorization: `Bearer ${QUEDA_TOKEN}` } : {}),
+    },
+    signal: AbortSignal.timeout(10_000),
+  });
+  if (!resposta.ok) {
+    const erro = new Error(`API respondeu ${resposta.status}`);
+    erro.status = resposta.status;
+    throw erro;
+  }
+  return resposta.json();
+}
+
+function textoAlerta(alerta) {
+  const hora = new Date(alerta.criado_em).toLocaleTimeString('pt-BR', {
+    timeZone: 'America/Sao_Paulo',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+
+  return (
+    `ATENCAO: possivel queda detectada pelo relogio de ${alerta.pessoa_idosa} as ${hora}.\n\n` +
+    'Alguem pode verificar agora? Se a pessoa nao responder, estiver ' +
+    'machucada ou nao conseguir levantar, ligue para o SAMU (192).\n\n' +
+    'Depois, respondam aqui para o sistema aprender:\n' +
+    '!queda ok - foi queda\n' +
+    '!queda falso - alarme falso\n\n' +
+    'O alerta vem de um modelo de IA e pode errar. Ele nao substitui a ' +
+    'deteccao de quedas do proprio Apple Watch, que deve continuar ligada.'
+  );
+}
+
+// Socket atual: o bot reconecta criando outro, e o laco de alertas
+// precisa usar sempre o mais recente
+let botAtual = null;
+let conectado = false;
+let buscandoAlertas = false;
+
+async function enviarAlertasPendentes() {
+  if (!conectado || !botAtual || buscandoAlertas) return;
+  buscandoAlertas = true;
+
+  try {
+    const pendentes = await apiQueda('/alertas/pendentes');
+
+    for (const alerta of pendentes) {
+      await botAtual.sendMessage(alerta.grupo, { text: textoAlerta(alerta) });
+      await apiQueda(`/alertas/${alerta.id}/enviado`, { method: 'POST' });
+
+      // So metadados no log (CLAUDE.md, secao 8)
+      console.log('alerta de queda enviado | id:', alerta.id, '| grupo:', alerta.grupo);
+
+      if (ORIENTACAO_APOS_ALERTA) {
+        try {
+          const hoje = new Date().toLocaleDateString('sv-SE', {
+            timeZone: 'America/Sao_Paulo',
+          });
+          const orientacao = await consultarAgente(
+            'O que fazer logo depois que a pessoa idosa cai?',
+            hoje,
+            alerta.grupo,
+            null,
+            'duvida',
+          );
+          await botAtual.sendMessage(alerta.grupo, { text: orientacao });
+        } catch (erro) {
+          console.error('Orientacao do Guia nao enviada:', erro.message);
+        }
+      }
+    }
+  } catch (erro) {
+    // 503 = API sem modelo de queda carregado: nada a fazer, sem poluir o log
+    if (erro.status !== 503 && erro.name !== 'TimeoutError') {
+      console.error('Falha ao buscar alertas de queda:', erro.message);
+    }
+  } finally {
+    buscandoAlertas = false;
+  }
+}
+
+setInterval(enviarAlertasPendentes, INTERVALO_ALERTAS);
+
 async function iniciarBot() {
   // Salva a autenticação do WhatsApp
   const { state, saveCreds } = await useMultiFileAuthState('./auth');
@@ -113,6 +217,7 @@ async function iniciarBot() {
   const bot = makeWASocket({
     auth: state,
   });
+  botAtual = bot;
 
   // Atualiza as credenciais
   bot.ev.on('creds.update', saveCreds);
@@ -137,10 +242,12 @@ async function iniciarBot() {
     }
 
     if (connection === 'open') {
+      conectado = true;
       console.log('Bot conectado ao WhatsApp!');
     }
 
     if (connection === 'close') {
+      conectado = false;
       const status = lastDisconnect?.error?.output?.statusCode;
 
       if (status !== DisconnectReason.loggedOut) {
@@ -203,6 +310,40 @@ async function iniciarBot() {
         } catch (erro) {
           console.error('Erro ao responder:', erro);
         }
+        continue;
+      }
+
+      // Retorno da familia sobre o ultimo alerta de queda. Nao passa pelos
+      // agentes: e so o rotulo (queda ou alarme falso) que alimenta o MLOps
+      if (comando === '!queda') {
+        const resposta = semAcento(pedido).toLowerCase();
+        const foiQueda = ['ok', 'sim', 'caiu'].includes(resposta)
+          ? true
+          : ['falso', 'nao', 'alarme falso'].includes(resposta)
+            ? false
+            : null;
+
+        let texto;
+        if (foiQueda === null) {
+          texto = 'Use !queda ok (foi queda) ou !queda falso (alarme falso).';
+        } else {
+          try {
+            await apiQueda('/alertas/retorno', {
+              method: 'POST',
+              body: JSON.stringify({ grupo, foi_queda: foiQueda }),
+            });
+            texto = foiQueda
+              ? 'Registrado: foi queda. Obrigado por avisar. Cuidem dela.'
+              : 'Registrado: alarme falso. Isso ajuda a melhorar o detector.';
+          } catch (erro) {
+            texto =
+              erro.status === 404
+                ? 'Nao ha alerta de queda em aberto neste grupo.'
+                : 'Nao consegui registrar agora. Tente de novo em instantes.';
+          }
+        }
+
+        await bot.sendMessage(grupo, { text: texto });
         continue;
       }
 

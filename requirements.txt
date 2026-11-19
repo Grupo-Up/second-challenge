@@ -43,3 +43,21 @@ fonttools>=4.56.0
 # Instale so para usar o Postgres do compose.yml:
 #     pip install "psycopg[binary]"
 # psycopg[binary]>=3.2
+
+# --- detector de quedas (app/queda) ---
+# numpy e scikit-learn ja vem com o sentence-transformers; ficam aqui
+# para o detector nao depender disso. pandas so para o treino e o
+# simulador do relogio.
+numpy>=1.26
+pandas>=2.2
+scikit-learn>=1.5
+joblib>=1.4
+pytest>=8.0
+
+# A LSTM exportada pelo notebook (.keras) precisa do TensorFlow na API,
+# na MESMA versao principal do Colab (o notebook imprime a versao e ela
+# fica em modelos/queda/config_queda.json, campo "ambiente"). Instale a
+# parte, para quem nao for rodar o detector nao baixar ~500 MB:
+#     pip install tensorflow-cpu==<versao do Colab>
+# No Windows, se nao houver tensorflow-cpu para a sua versao do Python,
+# use `pip install tensorflow==<versao>` (roda em CPU do mesmo jeito).
