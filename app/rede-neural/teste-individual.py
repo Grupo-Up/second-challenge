@@ -9,7 +9,7 @@ model = tf.keras.models.load_model('modelo_lstm_weda.keras')
 encoder = joblib.load('encoder_classes.pkl')
 scaler = joblib.load('scaler_weda.pkl')
 
-df = pd.read_csv('dataset-limpo.csv')
+df = pd.read_csv('dataset-limpo-v2.csv')
 
 colunas_features = [
     'gyro_x_list', 'gyro_y_list', 'gyro_z_list',

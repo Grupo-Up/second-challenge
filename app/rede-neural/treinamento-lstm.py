@@ -8,7 +8,7 @@ from sklearn.preprocessing import StandardScaler, LabelEncoder
 from sklearn.model_selection import train_test_split
 import joblib
 
-df = pd.read_csv('dataset-limpo.csv')
+df = pd.read_csv('dataset-limpo-v2.csv')
 
 colunas_features = [
     'gyro_x_list', 'gyro_y_list', 'gyro_z_list',
